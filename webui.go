@@ -422,6 +422,7 @@ func (a *app) bindUI() {
 		a.postLog("✓ 已同意免責聲明與使用條款（版本 " + version + "）。\r\n")
 	})
 	_ = w.Bind("goQuit", func() { procPostMessageW.Call(a.ui.hwnd, wmClose, 0, 0) })
+	_ = w.Bind("goShowLoginWindow", func() string { return a.showLoginWindow() })
 	_ = w.Bind("goOpenURL", func(target string) {
 		if strings.HasPrefix(target, "https://") {
 			openInBrowser(target)

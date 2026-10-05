@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +84,7 @@ func (b *cdpBrowser) reveal(scale float64) {
 		"bounds": map[string]interface{}{"left": left, "top": top, "width": ww, "height": wh}})
 	_ = b.send("Page.bringToFront", nil)
 	b.visible = true
+	b.forceToFront()
 }
 
 func (b *cdpBrowser) rawCall(method string, params map[string]interface{}, session string) (chan cdpWireMessage, error) {
@@ -214,7 +214,7 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	if err != nil {
 		return nil, err
 	}
-	profileDir := filepath.Join(a.appDir, "capture-cdp-profile")
+	profileDir := a.captureProfileDir()
 	_ = os.MkdirAll(profileDir, 0755)
 	prepareCaptureProfile(profileDir)
 	args := []string{
@@ -299,7 +299,7 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 		case <-ctx.Done():
 			return fail(ctx.Err())
 		case <-b.exited:
-			return fail(errors.New("瀏覽器啟動後立即結束；若 AIXAI 專用瀏覽器視窗仍開著，請先關閉後重試"))
+			return fail(errBrowserExitedEarly)
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
@@ -354,11 +354,22 @@ func (a *app) captureBrowser(ctx context.Context) (*cdpBrowser, error) {
 		a.capBrowser.close()
 		a.capBrowser = nil
 	}
+	// A hidden capture browser from an interrupted earlier run would make the
+	// new launch hand over to it and exit; stop such leftovers first.
+	a.cleanupLeftoverCaptureBrowsers()
 	b, err := a.startCaptureBrowser(ctx)
+	if errors.Is(err, errBrowserExitedEarly) && ctx.Err() == nil {
+		a.postLog("⚠ 擷取用的瀏覽器啟動後立即結束，正在清理背景程序後重試一次…\r\n")
+		killCaptureProfileBrowsers(a.captureProfileDir())
+		time.Sleep(2500 * time.Millisecond)
+		b, err = a.startCaptureBrowser(ctx)
+	}
 	if err != nil {
+		a.captureStartFailed.Store(true)
 		return nil, err
 	}
 	a.capBrowser = b
+	a.captureRunning.Store(true)
 	return b, nil
 }
 
@@ -368,6 +379,7 @@ func (a *app) closeCaptureBrowser() {
 		a.capBrowser.close()
 		a.capBrowser = nil
 	}
+	a.captureRunning.Store(false)
 }
 
 // tiktokLoggedIn asks the capture browser whether its persistent profile holds
@@ -405,17 +417,30 @@ func (a *app) ensureTikTokLogin(ctx context.Context, b *cdpBrowser) error {
 		return err
 	}
 	b.reveal(a.scale)
+	a.loginBrowser.Store(b)
+	defer a.loginBrowser.Store(nil)
+	a.emit("login", map[string]interface{}{"waiting": true})
+	defer a.emit("login", map[string]interface{}{"waiting": false})
 	a.postLog("ℹ 這個頁面需要登入才能播放：已在 Edge 視窗開啟登入頁。請登入一次（建議使用專用帳號，不要用主帳號），偵測到登入後會自動繼續。\r\n")
-	a.postLog("ℹ 登入只需要這一次：登入狀態會永久保存在 AIXAI 專用瀏覽器設定檔，之後的每一集都直接沿用。\r\n")
-	a.postStatus("狀態：等待您在 Edge 視窗登入（只需一次）…")
-	deadline := time.Now().Add(5 * time.Minute)
-	for time.Now().Before(deadline) {
+	a.postLog("ℹ 程式會一直等待，直到登入完成或按「停止」；若找不到登入視窗，按任務區的「顯示登入視窗」。登入狀態會保存，之後不必再登入。\r\n")
+	start := time.Now()
+	for {
+		mins := int(time.Since(start).Minutes())
+		if mins == 0 {
+			a.postStatus("狀態：等待您在 Edge 視窗登入（不限時，可按「停止」取消）…")
+		} else {
+			a.postStatus(fmt.Sprintf("狀態：等待您在 Edge 視窗登入（已等待 %d 分鐘，不限時，可按「停止」取消）…", mins))
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-b.readerDone:
-			return errors.New("登入視窗已被關閉，尚未完成登入")
+			a.loginCancelled.Store(true)
+			return errLoginCancelled
 		case <-time.After(2 * time.Second):
+		}
+		if a.stopRequested.Load() {
+			return context.Canceled
 		}
 		if b.tiktokLoggedIn() {
 			b.tiktokLoginChecked = true
@@ -425,7 +450,6 @@ func (a *app) ensureTikTokLogin(ctx context.Context, b *cdpBrowser) error {
 			return nil
 		}
 	}
-	return errors.New("等待 5 分鐘仍未完成登入。請重新開始，並在跳出的 Edge 視窗完成登入")
 }
 
 // captureMediaWithCDP opens one page in the shared capture browser and waits

@@ -108,6 +108,9 @@ func startBrowserWithPipe(path string, args []string, hidden bool) (*exec.Cmd, *
 		AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(toChildR.Fd()), syscall.Handle(fromChildW.Fd())},
 	}
 	startErr := cmd.Start()
+	if startErr == nil {
+		bindToAppLifetime(cmd.Process.Pid) // the browser can never outlive the app
+	}
 	// The child owns its ends now; keep only ours.
 	toChildR.Close()
 	fromChildW.Close()

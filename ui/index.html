@@ -650,6 +650,12 @@ window.aixai={ on(name,p){
       else { showBanner("err",p.message,[mkBtn("複製錯誤",()=>goCopyLog().then(e=>toast(e||"已複製紀錄"))),mkBtn("回報這個問題",()=>openFeedback(p.message))]); }
       $("status").textContent = p.ok ? "全部任務完成。" : (p.stopped ? "已停止。" : "任務未完成。");
       break; }
+    case "login":
+      if(p.waiting){
+        showBanner("warn","需要登入：請在跳出的 Edge 視窗完成登入。\n程式會一直等待，直到登入完成或按「停止」。",
+          [mkBtn("顯示登入視窗",()=>goShowLoginWindow().then(e=>{ if(e) toast(e); }))]);
+      } else { hideBanner(); }
+      break;
     case "releases": renderReleases(p); break;
     case "update": renderUpdate(p); break;
   }

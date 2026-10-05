@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.1"
+	appVersion = "4.0.2"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -482,6 +482,15 @@ type app struct {
 
 	// capBrowser is the capture browser shared by all URLs of one download task.
 	capBrowser *cdpBrowser
+	// captureRunning is true while a capture browser may be alive (checked at
+	// shutdown); captureStartFailed stops a batch when it cannot be started.
+	captureRunning     atomic.Bool
+	captureStartFailed atomic.Bool
+	// loginBrowser is the capture browser while it waits for the user to sign
+	// in (used by the 顯示登入視窗 button); loginCancelled stops the batch when
+	// the user closes that window.
+	loginBrowser   atomic.Pointer[cdpBrowser]
+	loginCancelled atomic.Bool
 
 	// Coalesce UI wake-up messages so heavy command output cannot flood
 	// the Win32 message queue and make the window appear unresponsive.
@@ -954,6 +963,8 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	safe := !cfg.UnsafeMode
 	// All URLs of this task share one capture browser; close it when done.
 	defer a.closeCaptureBrowser()
+	a.captureStartFailed.Store(false)
+	a.loginCancelled.Store(false)
 	pacer := newSafePacer()
 	if safe {
 		a.postLog(safeModeIntro(urls, cfg))
@@ -987,6 +998,12 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 			if safe && isBlockSignal(err) {
 				return blockStopError(err)
+			}
+			if a.captureStartFailed.Load() {
+				return captureStartStopError(err)
+			}
+			if a.loginCancelled.Load() {
+				return &commandRunError{Cause: err, Summary: "已關閉登入視窗、取消登入，因此停止整批下載。需要時重新按「開始下載」即可再次登入。"}
 			}
 			if cfg.Sequence {
 				msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
@@ -1099,6 +1116,12 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 			if safe && isBlockSignal(err) {
 				return blockStopError(err)
+			}
+			if a.captureStartFailed.Load() {
+				return captureStartStopError(err)
+			}
+			if a.loginCancelled.Load() {
+				return &commandRunError{Cause: err, Summary: "已關閉登入視窗、取消登入，因此停止整批下載。需要時重新按「開始下載」即可再次登入。"}
 			}
 			if cfg.Sequence {
 				msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
@@ -3543,6 +3566,9 @@ func (a *app) beginShutdown() {
 		select {
 		case <-workersDone:
 		case <-time.After(3 * time.Second):
+		}
+		if a.captureRunning.Load() {
+			killCaptureProfileBrowsers(a.captureProfileDir())
 		}
 
 		a.logMu.Lock()
