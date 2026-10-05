@@ -445,7 +445,7 @@ func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (bro
 		"--hide-crash-restore-bubble",
 	}
 	if strings.Contains(strings.ToLower(browserName), "edge") {
-		args = append(args, "--disable-features=msEdgeFirstRunExperience")
+		args = append(args, "--disable-features=msEdgeFirstRunExperience", "--edge-skip-compat-layer-relaunch")
 	}
 	// Chrome 137+ disabled --load-extension in the branded build. Keep this
 	// compatibility flag for versions where Chromium still exposes the switch;
@@ -456,6 +456,7 @@ func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (bro
 	startURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, startPath)
 	args = append(args, startURL)
 	cmd := exec.Command(browserPath, args...)
+	cmd.Env = browserEnv()
 	if err := cmd.Start(); err != nil {
 		return browserMediaCandidate{}, fmt.Errorf("啟動 %s 媒體嗅探視窗失敗：%w", browserName, err)
 	}

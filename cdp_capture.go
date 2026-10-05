@@ -100,8 +100,12 @@ func startBrowserWithPipe(path string, args []string, hidden bool) (*exec.Cmd, *
 	pipeArgs := []string{
 		"--remote-debugging-pipe",
 		fmt.Sprintf("--remote-debugging-io-pipes=%d,%d", toChildR.Fd(), fromChildW.Fd()),
+		// Edge relaunches itself when it sees a compatibility layer; the
+		// relaunched copy does not get our pipe handles.
+		"--edge-skip-compat-layer-relaunch",
 	}
 	cmd := exec.Command(path, append(pipeArgs, args...)...)
+	cmd.Env = browserEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags:              CREATE_NEW_PROCESS_GROUP,
 		HideWindow:                 hidden,
@@ -120,6 +124,20 @@ func startBrowserWithPipe(path string, args []string, hidden bool) (*exec.Cmd, *
 		return nil, nil, startErr
 	}
 	return cmd, &cdpPipe{w: toChildW, rf: fromChildR, r: bufio.NewReaderSize(fromChildR, 1<<20)}, nil
+}
+
+// browserEnv is the app environment without __COMPAT_LAYER, which Windows adds
+// when the app was started from Explorer with a compatibility record.
+func browserEnv() []string {
+	env := os.Environ()
+	out := env[:0:0]
+	for _, kv := range env {
+		if strings.HasPrefix(strings.ToUpper(kv), "__COMPAT_LAYER=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func cdpMapString(v interface{}) map[string]string {

@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.2"
+	appVersion = "4.0.3"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -988,6 +988,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// batch does not waste time failing and checking for updates on every episode.
 		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" {
 			err := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
+			if a.stopRequested.Load() {
+				return nil
+			}
 			if err == nil {
 				a.postLog("✓ 本項任務完成。\r\n")
 				a.emitTask(i, "done", "")
