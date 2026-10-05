@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Generate a minimal Windows amd64 .syso containing RT_ICON/RT_GROUP_ICON.
+No external Python packages are required. Input must be an .ico file.
+"""
+from __future__ import annotations
+import argparse, struct
+from dataclasses import dataclass
+from pathlib import Path
+
+RT_ICON = 3
+RT_GROUP_ICON = 14
+LANG_EN_US = 0x0409
+MACHINE_AMD64 = 0x8664
+REL_AMD64_ADDR32NB = 0x0003
+SECTION_CHARACTERISTICS = 0xC0300040  # initialized data, 4-byte align, read/write
+
+
+def align4(n: int) -> int:
+    return (n + 3) & ~3
+
+@dataclass
+class IcoEntry:
+    width: int
+    height: int
+    colors: int
+    reserved: int
+    planes: int
+    bit_count: int
+    size: int
+    offset: int
+    data: bytes
+
+@dataclass
+class Leaf:
+    data: bytes
+    data_entry_off: int = 0
+    raw_off: int = 0
+
+class DirNode:
+    def __init__(self, entries):
+        self.entries = entries  # list[(id, DirNode|Leaf)]
+        self.off = 0
+
+
+def parse_ico(path: Path):
+    b = path.read_bytes()
+    if len(b) < 6:
+        raise ValueError('ICO file too short')
+    reserved, kind, count = struct.unpack_from('<HHH', b, 0)
+    if reserved != 0 or kind != 1 or count < 1:
+        raise ValueError('Not a Windows icon (.ico) file')
+    entries=[]
+    for i in range(count):
+        off=6+i*16
+        if off+16 > len(b):
+            raise ValueError('Truncated ICO directory')
+        w,h,c,r,planes,bpp,size,img_off=struct.unpack_from('<BBBBHHII',b,off)
+        if img_off+size > len(b):
+            raise ValueError('Truncated ICO image')
+        entries.append(IcoEntry(w,h,c,r,planes,bpp,size,img_off,b[img_off:img_off+size]))
+    return entries
+
+
+def make_group(entries, icon_ids):
+    out=bytearray(struct.pack('<HHH',0,1,len(entries)))
+    for e, rid in zip(entries, icon_ids):
+        out += struct.pack('<BBBBHHIH',e.width,e.height,e.colors,e.reserved,e.planes,e.bit_count,e.size,rid)
+    return bytes(out)
+
+
+def make_resource_section(ico_entries):
+    icon_ids=list(range(2,2+len(ico_entries)))
+    icon_names=[]
+    for rid,e in zip(icon_ids,ico_entries):
+        icon_names.append((rid,DirNode([(LANG_EN_US,Leaf(e.data))])))
+    group=make_group(ico_entries,icon_ids)
+    root=DirNode([
+        (RT_ICON,DirNode(icon_names)),
+        (RT_GROUP_ICON,DirNode([(1,DirNode([(LANG_EN_US,Leaf(group))]))])),
+    ])
+
+    dirs=[]; leaves=[]; cursor=0
+    def assign_dirs(node):
+        nonlocal cursor
+        node.entries.sort(key=lambda kv: kv[0])
+        node.off=cursor
+        dirs.append(node)
+        cursor += 16 + 8*len(node.entries)
+        for _,child in node.entries:
+            if isinstance(child,DirNode):
+                assign_dirs(child)
+            else:
+                leaves.append(child)
+    assign_dirs(root)
+
+    # One IMAGE_RESOURCE_DATA_ENTRY per leaf.
+    for leaf in leaves:
+        leaf.data_entry_off=cursor
+        cursor += 16
+    cursor=align4(cursor)
+    for leaf in leaves:
+        leaf.raw_off=cursor
+        cursor += len(leaf.data)
+        cursor=align4(cursor)
+
+    section=bytearray(cursor)
+    reloc_offsets=[]
+    for node in dirs:
+        struct.pack_into('<IIHHHH',section,node.off,0,0,0,0,0,len(node.entries))
+        ent_off=node.off+16
+        for rid,child in node.entries:
+            if isinstance(child,DirNode):
+                target=0x80000000 | child.off
+            else:
+                target=child.data_entry_off
+            struct.pack_into('<II',section,ent_off,rid,target)
+            ent_off += 8
+    for leaf in leaves:
+        struct.pack_into('<IIII',section,leaf.data_entry_off,leaf.raw_off,len(leaf.data),0,0)
+        reloc_offsets.append(leaf.data_entry_off)
+        section[leaf.raw_off:leaf.raw_off+len(leaf.data)]=leaf.data
+    return bytes(section), reloc_offsets
+
+
+def write_syso(out_path: Path, section: bytes, reloc_offsets):
+    raw_ptr=20+40
+    reloc_ptr=raw_ptr+len(section)
+    sym_ptr=reloc_ptr+10*len(reloc_offsets)
+    header=struct.pack('<HHIIIHH',MACHINE_AMD64,1,0,sym_ptr,1,0,0x0004)
+    name=b'.rsrc\0\0\0'
+    section_header=struct.pack('<8sIIIIIIHHI',name,0,0,len(section),raw_ptr,reloc_ptr,0,len(reloc_offsets),0,SECTION_CHARACTERISTICS)
+    relocs=b''.join(struct.pack('<IIH',off,0,REL_AMD64_ADDR32NB) for off in reloc_offsets)
+    symbol=struct.pack('<8sIhHBB',name,0,1,0,3,0)
+    string_table=struct.pack('<I',4)
+    out_path.write_bytes(header+section_header+section+relocs+symbol+string_table)
+
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument('ico')
+    ap.add_argument('out')
+    args=ap.parse_args()
+    entries=parse_ico(Path(args.ico))
+    section,relocs=make_resource_section(entries)
+    write_syso(Path(args.out),section,relocs)
+    print(f'embedded {len(entries)} icon layers; {len(section)} resource bytes; {len(relocs)} relocations')
+
+if __name__=='__main__':
+    main()

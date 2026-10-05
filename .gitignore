@@ -1,0 +1,18 @@
+# Build outputs and packages (published via GitHub Releases, not committed)
+*.exe
+*.zip
+*.test
+dist/
+
+# Runtime data that must never be committed
+cookies*.txt
+*.cookies
+settings.json
+capture-*-profile/
+AIXAI_下載紀錄*.txt
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

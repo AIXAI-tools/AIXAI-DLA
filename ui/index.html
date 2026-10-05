@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIXAI 萬能下載工具</title>
+<style>
+/* ===================================================================
+   AIXAI — Ancient Intelligence × Artificial Intelligence
+   Visual language: ink & paper (ancient) + jade-teal signal (tech),
+   bronze used only as a fine accent line. Calm, high-contrast, no glow.
+   =================================================================== */
+:root{
+  --bg:#F4F1EA; --bg-dot:rgba(27,33,41,.045);
+  --surface:#FFFFFF; --surface-2:#FAF8F3; --surface-3:#F1EDE4;
+  --border:#E2DBCC; --border-strong:#CFC6B4;
+  --text:#1B2129; --muted:#5A6572; --faint:#8A939E;
+  --accent:#0B7A72; --accent-hover:#08665F; --accent-ink:#FFFFFF; --accent-soft:rgba(11,122,114,.10);
+  --bronze:#8A6A27; --bronze-line:#C8A55B;
+  --ok:#1E7A3C; --ok-soft:rgba(30,122,60,.10);
+  --warn:#946000; --warn-soft:rgba(148,96,0,.10);
+  --danger:#B42318; --danger-soft:rgba(180,35,24,.08);
+  --shadow:0 1px 2px rgba(27,33,41,.06),0 4px 16px rgba(27,33,41,.05);
+  --radius:12px; --radius-sm:8px;
+  --font:"Microsoft JhengHei UI","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","Consolas","Microsoft JhengHei UI",monospace;
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#0D1117; --bg-dot:rgba(230,234,240,.035);
+  --surface:#151B23; --surface-2:#1A212B; --surface-3:#202834;
+  --border:#2A3340; --border-strong:#3A4555;
+  --text:#E6EAF0; --muted:#9BA6B2; --faint:#6E7A87;
+  --accent:#34C3B4; --accent-hover:#4FD3C5; --accent-ink:#04211E; --accent-soft:rgba(52,195,180,.12);
+  --bronze:#D3B06C; --bronze-line:#7E6538;
+  --ok:#46C46A; --ok-soft:rgba(70,196,106,.12);
+  --warn:#E5B54A; --warn-soft:rgba(229,181,74,.12);
+  --danger:#FF7B72; --danger-soft:rgba(255,123,114,.10);
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.25);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  font:14.5px/1.55 var(--font); color:var(--text); background:var(--bg);
+  background-image:radial-gradient(var(--bg-dot) 1px,transparent 1px); background-size:22px 22px;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- app shell ---------- */
+.app{display:grid;grid-template-rows:auto 1fr;height:100vh}
+header{
+  display:flex;align-items:center;gap:14px;padding:12px 22px;
+  background:var(--surface);border-bottom:1px solid var(--border);position:relative;
+}
+header::after{ /* bronze → jade hairline: ancient meets modern */
+  content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+  background:linear-gradient(90deg,transparent,var(--bronze-line) 18%,var(--accent) 82%,transparent);opacity:.75;
+}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand svg{flex:none}
+.brand h1{font-size:18px;font-weight:700;margin:0;letter-spacing:.5px;white-space:nowrap}
+.brand .tag{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ver{font:600 11.5px var(--mono);color:var(--bronze);border:1px solid var(--bronze-line);border-radius:999px;padding:1px 8px;white-space:nowrap}
+.spacer{flex:1}
+.icon-btn{
+  display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 12px;border-radius:var(--radius-sm);
+  border:1px solid var(--border);background:var(--surface);cursor:pointer;color:var(--text);white-space:nowrap;
+}
+.icon-btn:hover{background:var(--surface-3)}
+.icon-btn svg{width:17px;height:17px;flex:none}
+.icon-btn .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:none}
+.icon-btn.has-update .dot{display:inline-block}
+.icon-only{padding:0;width:36px;justify-content:center}
+
+main{
+  overflow:auto;padding:18px 22px 22px;
+  display:grid;gap:18px;grid-template-columns:minmax(380px,1fr) minmax(360px,1fr);align-items:start;
+}
+@media (max-width:1020px){ main{grid-template-columns:1fr} }
+@media (max-width:640px){ header .tag, .btn-label{display:none} main{padding:14px} }
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:10px;padding:14px 18px 0}
+.card-h h2{font-size:15px;margin:0;font-weight:700;display:flex;align-items:center;gap:8px}
+.card-h h2 .seal{ /* tiny square seal before section titles */
+  width:9px;height:9px;border:1.5px solid var(--bronze);border-radius:2px;transform:rotate(45deg)
+}
+.card-b{padding:14px 18px 18px}
+.right-col{display:grid;gap:18px;min-width:0}
+
+/* ---------- form ---------- */
+label.f{display:block;font-size:13px;font-weight:600;color:var(--muted);margin:0 0 6px}
+.field{margin-bottom:14px}
+textarea,input[type=text],input[type=number],select{
+  width:100%;border:1px solid var(--border-strong);background:var(--surface-2);border-radius:var(--radius-sm);
+  padding:8px 11px;min-height:38px;transition:border-color .15s,box-shadow .15s;
+}
+textarea{resize:vertical;min-height:110px;font-family:var(--mono);font-size:13.5px;line-height:1.5}
+textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.invalid{border-color:var(--danger)!important;box-shadow:0 0 0 3px var(--danger-soft)!important}
+.err-text{color:var(--danger);font-size:13px;margin-top:6px;display:none}
+.err-text.show{display:block}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:14px}
+@media (max-width:560px){ .grid2{grid-template-columns:1fr} }
+.input-group{display:flex;gap:8px}
+.input-group input{flex:1;min-width:0}
+
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 14px;border-radius:var(--radius-sm);
+  border:1px solid var(--border-strong);background:var(--surface);cursor:pointer;font-weight:600;white-space:nowrap;
+}
+.btn:hover{background:var(--surface-3)}
+.btn svg{width:16px;height:16px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.danger{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
+.btn.ghost:hover{background:var(--surface-3);color:var(--text)}
+.btn.sm{height:30px;padding:0 10px;font-size:13px}
+
+/* toggle chips (連續集數 / 帳號安全模式) */
+.opt{
+  display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:var(--surface-2);min-height:44px;
+}
+.opt input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);margin:0;flex:none}
+.opt label{white-space:nowrap;cursor:pointer}
+.opt .t{font-weight:600}
+.opt .s{font-size:12.5px;color:var(--muted)}
+.opt input[type=number]{width:62px;min-height:32px;padding:4px 6px;text-align:center;flex:none}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-bottom:14px}
+.shield{color:var(--ok)}
+
+details.adv{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);margin-bottom:16px}
+details.adv>summary{cursor:pointer;list-style:none;padding:10px 14px;font-weight:600;display:flex;align-items:center;gap:8px;color:var(--muted)}
+details.adv>summary::-webkit-details-marker{display:none}
+details.adv>summary .chev{transition:transform .15s}
+details.adv[open]>summary .chev{transform:rotate(90deg)}
+details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adv-b{padding:4px 14px 14px;border-top:1px solid var(--border)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{
+  font:12.5px var(--mono);padding:3px 9px;border-radius:999px;border:1px solid var(--border-strong);
+  background:var(--surface);cursor:pointer;color:var(--text)
+}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.checks{display:flex;flex-direction:column;gap:6px}
+.checks label{display:flex;gap:8px;align-items:center;cursor:pointer}
+.checks input{width:17px;height:17px;accent-color:var(--accent)}
+
+.actionbar{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--border);
+}
+.go{height:46px;padding:0 26px;font-size:15.5px;border-radius:10px;min-width:170px}
+.status{min-width:0;flex:1}
+.status .s1{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status .s2{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kbd{font:11px var(--mono);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:4px;padding:0 4px;color:var(--muted)}
+
+/* ---------- tasks ---------- */
+.overall{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.bar{height:6px;border-radius:99px;background:var(--surface-3);overflow:hidden;flex:1}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+.count{font:600 13px var(--mono);color:var(--muted);white-space:nowrap}
+.tasks{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.task{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid transparent}
+.task.running{border-color:var(--accent);background:var(--accent-soft)}
+.task .ic{width:20px;height:20px;display:grid;place-items:center;font-size:14px}
+.task .u{font:12.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task .m{font-size:12px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task .p{font:12px var(--mono);color:var(--muted)}
+.task.done .ic{color:var(--ok)} .task.failed .ic{color:var(--danger)} .task.pending .ic{color:var(--faint)}
+.spin{width:14px;height:14px;border:2px solid var(--accent-soft);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{color:var(--muted);text-align:center;padding:22px 10px;font-size:13.5px}
+.banner{display:none;margin-top:12px;padding:10px 12px;border-radius:var(--radius-sm);font-size:13.5px;white-space:pre-wrap;word-break:break-word}
+.banner.show{display:block}
+.banner.ok{background:var(--ok-soft);color:var(--ok)}
+.banner.err{background:var(--danger-soft);color:var(--danger)}
+.banner.warn{background:var(--warn-soft);color:var(--warn)}
+.banner .acts{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- log ---------- */
+.log{
+  font:12.5px/1.6 var(--mono);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);
+  height:260px;overflow:auto;padding:10px 12px;white-space:pre-wrap;word-break:break-all;margin:0
+}
+.log .ok{color:var(--ok)} .log .warn{color:var(--warn)} .log .err{color:var(--danger)}
+.log .info{color:var(--muted)} .log .step{color:var(--accent)} .log .head{color:var(--bronze);font-weight:600}
+.card-h .acts{margin-left:auto;display:flex;gap:4px}
+
+/* ---------- dialogs ---------- */
+dialog{border:1px solid var(--border);border-radius:14px;background:var(--surface);color:var(--text);padding:0;width:min(640px,94vw);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog::backdrop{background:rgba(10,14,20,.45)}
+.dlg-h{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--border)}
+.dlg-h h3{margin:0;font-size:16px}
+.dlg-b{padding:16px 20px;max-height:min(68vh,620px);overflow:auto}
+.dlg-f{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--border);flex-wrap:wrap}
+.rel{display:grid;grid-template-columns:20px 1fr;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;cursor:pointer;background:var(--surface-2)}
+.rel:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.rel input{accent-color:var(--accent);margin-top:3px}
+.rel .t{font-weight:700;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.badge{font:600 11px var(--font);padding:1px 7px;border-radius:999px;border:1px solid currentColor}
+.badge.cur{color:var(--accent)} .badge.beta{color:var(--warn)} .badge.stable{color:var(--ok)} .badge.old{color:var(--faint)}
+.rel .d{font-size:12.5px;color:var(--muted)}
+.rel pre{font:12px/1.5 var(--font);white-space:pre-wrap;margin:6px 0 0;color:var(--muted);max-height:120px;overflow:auto}
+.seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:14px}
+.seg button{border:0;background:transparent;padding:6px 14px;cursor:pointer;font-weight:600;color:var(--muted)}
+.seg button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.thumb{position:relative;width:110px;height:74px;border-radius:6px;border:1px solid var(--border);overflow:hidden;background:var(--surface-3);display:grid;place-items:center;font-size:11px;color:var(--muted);text-align:center;padding:2px}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.thumb button{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;cursor:pointer;line-height:20px;padding:0}
+.note{font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px}
+.toast{position:fixed;right:20px;bottom:20px;max-width:380px;padding:12px 16px;border-radius:10px;background:var(--text);color:var(--bg);box-shadow:var(--shadow);transform:translateY(20px);opacity:0;transition:.25s;pointer-events:none;z-index:9}
+.toast.show{transform:none;opacity:1}
+.terms h4{margin:16px 0 6px;font-size:14px;color:var(--bronze)}
+.terms p,.terms li{font-size:13.5px;color:var(--text)}
+.terms p.lead{margin-top:0;font-weight:600}
+.terms ul{margin:0;padding-left:20px}
+.consent{display:flex;gap:10px;align-items:flex-start;margin-top:18px;padding:12px;border:1px solid var(--accent);border-radius:var(--radius-sm);background:var(--accent-soft);font-weight:600;cursor:pointer}
+.consent input{width:18px;height:18px;margin-top:2px;accent-color:var(--accent);flex:none}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <!-- Mark: a square seal (ancient) holding a three-node circuit (artificial) -->
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="29" height="29" rx="6" fill="none" stroke="var(--bronze)" stroke-width="2"/>
+        <path d="M10 23 L17 10 L24 23" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M13 18.5 H21" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="10" cy="23" r="2.3" fill="var(--bronze)"/><circle cx="24" cy="23" r="2.3" fill="var(--bronze)"/><circle cx="17" cy="10" r="2.3" fill="var(--bronze)"/>
+      </svg>
+      <div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:10px"><h1 id="appTitle">AIXAI 萬能下載工具</h1><span class="ver" id="ver">v—</span></div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <button class="icon-btn" id="btnUpdate" title="檢查更新／切換版本">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/></svg>
+      <span class="btn-label">版本</span><span class="dot"></span>
+    </button>
+    <button class="icon-btn" id="btnFeedback" title="回報問題或建議">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="btn-label">回報</span>
+    </button>
+    <button class="icon-btn" id="btnTerms" title="免責聲明與使用條款">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="M9 12h6M9 15.5h4"/></svg>
+      <span class="btn-label">條款</span>
+    </button>
+    <button class="icon-btn icon-only" id="btnTheme" title="切換主題（跟隨系統／淺色／深色）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" /><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <!-- ================= left: what to download ================= -->
+    <section class="card">
+      <div class="card-h"><h2><span class="seal"></span>下載</h2></div>
+      <div class="card-b">
+        <div class="field">
+          <label class="f" for="urls">影片網址</label>
+          <textarea id="urls" spellcheck="false" placeholder="貼上網址，一行一個"></textarea>
+          <div class="err-text" id="err-urls"></div>
+        </div>
+
+        <div class="opts">
+          <div class="opt" id="seqBox">
+            <input type="checkbox" id="sequence">
+            <label for="sequence"><div class="t">連續集數</div></label>
+            <input type="number" id="seqStart" min="1" aria-label="起始集數"> <span style="color:var(--muted)">～</span>
+            <input type="number" id="seqEnd" min="1" aria-label="結束集數">
+          </div>
+          <div class="opt">
+            <input type="checkbox" id="safe">
+            <label for="safe"><div class="t"><span class="shield">🛡</span> 帳號安全模式</div><div class="s">隨機間隔・分批休息・被擋即停</div></label>
+          </div>
+        </div>
+        <div class="err-text" id="err-sequence" style="margin:-6px 0 12px"></div>
+
+        <div class="grid2 field">
+          <div>
+            <label class="f" for="mode">處理方式</label>
+            <select id="mode"></select>
+            <div id="formatBox" class="hidden" style="margin-top:8px">
+              <input type="text" id="formatId" placeholder="格式 ID，例如 136+bestaudio/best">
+              <div class="err-text" id="err-formatId"></div>
+            </div>
+          </div>
+          <div>
+            <label class="f" for="output">儲存位置</label>
+            <div class="input-group">
+              <input type="text" id="output" spellcheck="false">
+              <button class="btn" id="btnBrowse" title="選擇資料夾">選擇</button>
+              <button class="btn icon-only" id="btnOpenFolder" title="開啟資料夾" style="width:38px;padding:0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+              </button>
+            </div>
+            <div class="err-text" id="err-output"></div>
+          </div>
+        </div>
+
+        <details class="adv" id="adv">
+          <summary><span class="chev">▸</span> 進階設定 <span class="sum" id="advSum"></span></summary>
+          <div class="adv-b">
+            <div class="field" style="margin-top:12px">
+              <label class="f" for="login">網站登入</label>
+              <select id="login"></select>
+              <div id="cookieBox" class="hidden" style="margin-top:8px">
+                <div class="input-group"><input type="text" id="cookieFile" readonly placeholder="尚未選擇 cookies.txt"><button class="btn" id="btnCookie">選擇…</button></div>
+                <div class="err-text" id="err-cookieFile"></div>
+              </div>
+            </div>
+            <div class="field">
+              <label class="f" for="extra">附加參數（yt-dlp，套用到所有下載）</label>
+              <input type="text" id="extra" spellcheck="false" placeholder="可留白，例如 -x 只下載音訊">
+              <div class="chips" id="chips"></div>
+            </div>
+            <div class="field checks">
+              <label><input type="checkbox" id="noPlaylist"> 一般下載時避免誤抓整張播放清單</label>
+              <label><input type="checkbox" id="playlistFolder"> 播放清單依名稱建立資料夾</label>
+            </div>
+            <div class="row">
+              <button class="btn sm" id="btnResume">選擇未完成的檔案（接續下載）…</button>
+              <span class="s" id="resumeInfo" style="font-size:12.5px;color:var(--muted)"></span>
+            </div>
+          </div>
+        </details>
+
+        <div class="actionbar">
+          <button class="btn primary go" id="btnGo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><path d="m6 11 6 6 6-6"/><path d="M5 20h14"/></svg>
+            <span id="goLabel">開始下載</span>
+          </button>
+          <div class="status">
+            <div class="s1" id="status">準備中…</div>
+            <div class="s2" id="env"></div>
+          </div>
+          <span class="kbd" title="快速鍵">Ctrl+Enter</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= right: progress + log ================= -->
+    <div class="right-col">
+      <section class="card">
+        <div class="card-h"><h2><span class="seal"></span>任務</h2></div>
+        <div class="card-b">
+          <div class="overall"><div class="bar"><i id="overallBar"></i></div><span class="count" id="count">0 / 0</span></div>
+          <ul class="tasks" id="tasks"><li class="empty" id="emptyTasks">尚無任務。貼上網址後按「開始下載」。</li></ul>
+          <div class="banner" id="banner"></div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2><span class="seal"></span>紀錄</h2>
+          <div class="acts">
+            <button class="btn ghost sm" id="btnCopyLog" title="複製完整紀錄（敏感資訊已遮蔽）">複製</button>
+            <button class="btn ghost sm" id="btnOpenLog" title="開啟紀錄檔">紀錄檔</button>
+            <button class="btn ghost sm" id="btnClearLog" title="清除畫面（不影響紀錄檔）">清除</button>
+          </div>
+        </div>
+        <div class="card-b"><pre class="log" id="log" aria-live="polite"></pre></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ================= update dialog ================= -->
+<dialog id="dlgUpdate">
+  <div class="dlg-h"><h3>版本更新／切換</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <p style="margin-top:0">目前使用 <b id="curVer"></b>。可更新到新版本，或退回先前的穩定版本；每個檔案都會先核對 SHA256 才替換。</p>
+    <div id="relState" class="note">正在讀取版本清單…</div>
+    <div id="relList"></div>
+    <div id="updProgress" class="hidden" style="margin-top:12px">
+      <div class="bar"><i id="updBar"></i></div>
+      <div id="updMsg" style="margin-top:6px;font-size:13px;color:var(--muted)"></div>
+    </div>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnRelPage">在瀏覽器開啟發佈頁</button>
+    <button class="btn primary" id="btnInstall" disabled>安裝所選版本</button>
+  </div>
+</dialog>
+
+<!-- ================= feedback dialog ================= -->
+<dialog id="dlgFeedback">
+  <div class="dlg-h"><h3>回報問題或建議</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <div class="seg" role="group" aria-label="回報類型">
+      <button data-kind="bug" aria-pressed="true">問題</button><button data-kind="idea" aria-pressed="false">建議</button><button data-kind="other" aria-pressed="false">其他</button>
+    </div>
+    <div class="field">
+      <label class="f" for="fbText">說明（發生什麼事？預期應該如何？）</label>
+      <textarea id="fbText" style="font-family:var(--font);min-height:130px"></textarea>
+      <div class="err-text" id="err-fbText"></div>
+    </div>
+    <div class="field">
+      <label class="f" for="fbContact">聯絡方式（選填）</label>
+      <input type="text" id="fbContact" placeholder="例如 Email 或 GitHub 帳號，方便追問細節">
+    </div>
+    <div class="field">
+      <label class="f">截圖</label>
+      <div class="row">
+        <button class="btn sm" id="btnShot">擷取目前畫面</button>
+        <button class="btn sm" id="btnAddImg">加入圖片…</button>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
+    <div class="note" id="fbWhere"></div>
+    <div class="banner" id="fbResult"></div>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnFbCopy">只複製內容</button>
+    <button class="btn" id="btnFbMail">以 Email 回報</button>
+    <button class="btn primary" id="btnFbGitHub">透過 GitHub 回報</button>
+  </div>
+</dialog>
+
+<!-- ================= disclaimer / terms ================= -->
+<dialog id="dlgTerms">
+  <div class="dlg-h"><h3>免責聲明與使用條款</h3><div class="spacer"></div><span class="ver" id="termsVer"></span></div>
+  <div class="dlg-b terms">
+    <p class="lead">使用本工具前，請閱讀並同意以下條款。若不同意，或所在地法律不允許，請勿使用。</p>
+    <h4>1. 只下載你有權保存的內容</h4>
+    <p>本工具是一般用途的技術工具，僅供下載<b>你本人依法有權保存或使用</b>的內容：你自己的作品、公共領域或允許下載之授權內容、權利人同意的內容，或依當地法律屬合理使用且不違反網站條款的情形。</p>
+    <h4>2. 嚴禁的用途</h4>
+    <ul>
+      <li>未經授權重製、散布、公開傳輸、販售或以其他方式利用他人受著作權保護的內容；</li>
+      <li>規避、破解或移除 DRM、加密、付費牆、存取控制或其他防盜拷措施；</li>
+      <li>取得你沒有合法觀看權限的內容；任何商業用途，或違反網站條款、隱私或其他法律的行為。</li>
+    </ul>
+    <h4>3. 本工具不做的事</h4>
+    <p>本工具<b>不破解 DRM、不繞過付費牆或存取控制</b>；<b>不提供、不儲存、不索引、不推薦</b>任何影音內容或網址清單，所有網址由使用者自行輸入；本專案<b>不以營利為目的</b>，不收費、不含廣告。</p>
+    <h4>4. 你的責任</h4>
+    <p>你須自行確認擁有合法權利，並遵守所在地法律（包括中華民國著作權法第 80 條之 2、第 87 條等）及各網站服務條款。因使用本工具所生之法律責任、賠償、帳號限制或封鎖及其他損失，概由你自行承擔；如因你違反本條款致作者或貢獻者遭第三人請求，你同意於法律允許範圍內負責處理並賠償。</p>
+    <h4>5. 帳號風險</h4>
+    <p>網站可能限制或封鎖大量、自動化存取的帳號。「帳號安全模式」只能降低、無法消除風險；需登入的網站請使用下載專用帳號。</p>
+    <h4>6. 無擔保與責任限制</h4>
+    <p>本工具依「現狀」提供，不附任何明示或默示擔保。在法律允許之最大範圍內，作者及貢獻者對任何直接或間接損害概不負責（MIT 授權）。</p>
+    <h4>7. 第三方與商標</h4>
+    <p>yt-dlp、FFmpeg、Deno 等第三方元件於執行時自官方來源下載，依其各自授權提供。本工具與 YouTube、TikTok、Meta、Google 或任何網站均無關聯，亦未獲其背書。</p>
+    <h4>8. 權利人通知與條款變更</h4>
+    <p>權利人如認為本專案侵害其權利，請透過 GitHub Issues 或回報信箱聯繫，我們會儘速處理。條款更新後，程式會再次請你確認。</p>
+    <label class="consent" id="consentRow"><input type="checkbox" id="termsCheck"> 我已閱讀並同意以上條款，並保證只下載我有權保存的內容。</label>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnTermsDecline">不同意，離開</button>
+    <button class="btn" id="btnTermsClose">關閉</button>
+    <button class="btn primary" id="btnTermsAccept" disabled>同意並開始使用</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { init:null, busy:false, urls:[], tasks:[], running:-1, kind:"bug", images:[], releases:null, saveTimer:0 };
+
+/* ---------------- theme ---------------- */
+const themeOrder = ["system","light","dark"];
+function getThemePref(){ try { return localStorage.getItem("aixai.theme") || "system"; } catch { return "system"; } }
+function applyTheme(){
+  const pref = getThemePref();
+  const dark = pref === "dark" || (pref === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  $("btnTheme").title = "主題：" + {system:"跟隨系統",light:"淺色",dark:"深色"}[pref] + "（點擊切換）";
+  window.goSetTheme && goSetTheme(dark);
+}
+$("btnTheme").onclick = () => {
+  const next = themeOrder[(themeOrder.indexOf(getThemePref()) + 1) % themeOrder.length];
+  try { localStorage.setItem("aixai.theme", next); } catch {}
+  applyTheme(); toast("主題：" + {system:"跟隨系統",light:"淺色",dark:"深色"}[next]);
+};
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+
+/* ---------------- helpers ---------------- */
+let toastTimer = 0;
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2600); }
+function fieldError(field,msg){
+  document.querySelectorAll(".invalid").forEach(e=>e.classList.remove("invalid"));
+  document.querySelectorAll(".err-text").forEach(e=>{e.classList.remove("show");e.textContent="";});
+  if(!field) return;
+  const box=$("err-"+field); if(box){box.textContent=msg;box.classList.add("show");}
+  const input={urls:"urls",sequence:"seqStart",formatId:"formatId",output:"output",cookieFile:"cookieFile",fbText:"fbText"}[field];
+  if(input){ $(input).classList.add("invalid"); $(input).focus(); }
+  if(field==="cookieFile") $("adv").open=true;
+}
+function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* ---------------- settings form ---------------- */
+function collect(){
+  return {
+    urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
+    sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
+    safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
+    extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, advancedOpen:$("adv").open
+  };
+}
+function saveSoon(){ clearTimeout(state.saveTimer); state.saveTimer=setTimeout(()=>window.goSaveSettings&&goSaveSettings(collect()),400); }
+function refreshDependent(){
+  $("formatBox").classList.toggle("hidden", $("mode").value !== "4");
+  $("cookieBox").classList.toggle("hidden", $("login").value !== "cookiefile");
+  const parts=[];
+  const lo=$("login"); if(lo.value!=="auto") parts.push(lo.options[lo.selectedIndex].text.replace("…",""));
+  if($("extra").value.trim()) parts.push("參數："+$("extra").value.trim());
+  $("advSum").textContent = parts.length ? "· "+parts.join("　") : "";
+  $("seqBox").style.opacity = $("sequence").checked ? 1 : .75;
+}
+["mode","login","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId"].forEach(id=>{
+  $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
+  $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
+});
+$("adv").addEventListener("toggle",saveSoon);
+$("btnBrowse").onclick = async()=>{ const p=await goPickFolder($("output").value); if(p){$("output").value=p;saveSoon();} };
+$("btnOpenFolder").onclick = async()=>{ const e=await goOpenFolder($("output").value); if(e) toast(e); };
+$("btnCookie").onclick = async()=>{ const p=await goPickCookieFile(); if(p){$("cookieFile").value=p;saveSoon();} };
+$("btnResume").onclick = async()=>{ const dir=await goPickResumeFile($("output").value); if(dir){$("output").value=dir;$("resumeInfo").textContent="✓ 已選擇接續檔，請貼上原本的網址後開始。";saveSoon();} };
+
+function fillForm(init){
+  const s=init.settings;
+  $("appTitle").textContent=init.title; $("ver").textContent="v"+init.version; $("curVer").textContent="v"+init.version;
+  document.title=init.title;
+  $("mode").innerHTML=init.modes.map(m=>`<option value="${m.value}" title="${esc(m.hint||"")}">${esc(m.label)}</option>`).join("");
+  $("login").innerHTML=init.logins.map(m=>`<option value="${m.value}">${esc(m.label)}</option>`).join("");
+  $("chips").innerHTML=init.presets.map((p,i)=>`<button class="chip" data-i="${i}" title="${esc(p.hint||"")}">${esc(p.label)}</button>`).join("");
+  $("chips").onclick=e=>{
+    const b=e.target.closest(".chip"); if(!b) return;
+    const arg=init.presets[+b.dataset.i].value; const cur=$("extra").value.trim();
+    if((" "+cur+" ").includes(" "+arg+" ")){toast("這個參數已經加入了");return;}
+    $("extra").value=(cur?cur+" ":"")+arg; refreshDependent(); saveSoon(); toast("已加入："+arg);
+  };
+  $("mode").value=String(s.mode||0); $("output").value=s.output_folder||"";
+  $("sequence").checked=!!s.sequence; $("seqStart").value=s.sequence_start||1; $("seqEnd").value=s.sequence_end||50;
+  $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder;
+  $("extra").value=s.extra_args||"";
+  if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
+  $("adv").open=!!s.advanced_open;
+  $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
+    + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
+    + `<br>按下後會在瀏覽器開啟已填好的回報頁，並開啟截圖所在資料夾，把圖片拖進去即可。`;
+  $("btnFbMail").classList.toggle("hidden", !init.email);
+  refreshDependent();
+}
+
+/* ---------------- start / stop ---------------- */
+async function startOrStop(){
+  if(state.busy){ goStop(); $("goLabel").textContent="停止中…"; return; }
+  fieldError(null);
+  const res = await goStart(collect());
+  if(res.error){ fieldError(res.field, res.error); if(!res.field) showBanner("err", res.error); return; }
+  state.urls=res.urls; state.tasks=res.urls.map(u=>({url:u,state:"pending",msg:"",pct:null})); state.running=-1;
+  hideBanner(); renderTasks(); setBusy(true);
+}
+$("btnGo").onclick=startOrStop;
+document.addEventListener("keydown",e=>{ if(e.ctrlKey && e.key==="Enter"){ e.preventDefault(); startOrStop(); } });
+
+function setBusy(b){
+  state.busy=b;
+  const go=$("btnGo");
+  go.classList.toggle("primary",!b); go.classList.toggle("danger",b);
+  $("goLabel").textContent = b ? "停止" : "開始下載";
+  go.querySelector("svg").innerHTML = b ? '<rect x="6" y="6" width="12" height="12" rx="2"/>' : '<path d="M12 4v12"/><path d="m6 11 6 6 6-6"/><path d="M5 20h14"/>';
+  ["urls","mode","output","btnBrowse","sequence","seqStart","seqEnd","safe","login","extra","noPlaylist","playlistFolder","btnCookie","btnResume","formatId","btnUpdate"].forEach(id=>$(id).disabled=b);
+}
+
+/* ---------------- tasks ---------------- */
+function renderTasks(){
+  const ul=$("tasks");
+  if(!state.tasks.length){ ul.innerHTML='<li class="empty">尚無任務。貼上網址後按「開始下載」。</li>'; $("count").textContent="0 / 0"; $("overallBar").style.width="0"; return; }
+  const icon={pending:"○",running:'<span class="spin"></span>',done:"✓",failed:"✕"};
+  ul.innerHTML=state.tasks.map((t,i)=>`<li class="task ${t.state}" id="task-${i}">
+    <span class="ic">${icon[t.state]}</span>
+    <div style="min-width:0"><div class="u" title="${esc(t.url)}">${i+1}. ${esc(t.url)}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.msg)}</div>`:""}</div>
+    <span class="p">${t.state==="running" && t.pct!=null ? t.pct.toFixed(0)+"%" : ""}</span></li>`).join("");
+  const done=state.tasks.filter(t=>t.state==="done").length, failed=state.tasks.filter(t=>t.state==="failed").length;
+  $("count").textContent=`${done} / ${state.tasks.length}`+(failed?`（${failed} 失敗）`:"");
+  const run=state.running>=0 && state.tasks[state.running] && state.tasks[state.running].pct ? state.tasks[state.running].pct/100 : 0;
+  $("overallBar").style.width=((done+failed+run)/state.tasks.length*100)+"%";
+  const cur=$("task-"+state.running); if(cur) cur.scrollIntoView({block:"nearest"});
+}
+function showBanner(kind,msg,acts){ const b=$("banner"); b.className="banner show "+kind; b.textContent=msg; if(acts){const d=document.createElement("div");d.className="acts";acts.forEach(a=>d.appendChild(a));b.appendChild(d);} }
+function hideBanner(){ $("banner").className="banner"; }
+function mkBtn(label,fn){ const b=document.createElement("button"); b.className="btn sm"; b.textContent=label; b.onclick=fn; return b; }
+
+/* ---------------- log ---------------- */
+const LOG_MAX=3000;
+function classify(line){
+  if(/^(===|---)/.test(line)) return "head";
+  if(/^(✓|\[download\] 100%)/.test(line)) return "ok";
+  if(/^(⚠|WARNING)/.test(line)) return "warn";
+  if(/^(錯誤|ERROR|✕)|失敗/.test(line)) return "err";
+  if(/^(→|🛡)/.test(line)) return "step";
+  if(/^(ℹ|\[)/.test(line)) return "info";
+  return "";
+}
+let logPending="";
+function appendLog(text){
+  logPending+=text;
+  const parts=logPending.split(/\r?\n/); logPending=parts.pop();
+  const box=$("log"); const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+  const frag=document.createDocumentFragment();
+  for(const raw of parts){
+    const line=raw.replace(/\r/g,""); if(!line.trim()) continue;
+    const m=line.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
+    if(m && state.running>=0 && state.tasks[state.running]){ state.tasks[state.running].pct=parseFloat(m[1]); renderTasksSoon(); if(!line.includes("100%")) continue; }
+    const div=document.createElement("div"); const c=classify(line); if(c) div.className=c; div.textContent=line; frag.appendChild(div);
+  }
+  box.appendChild(frag);
+  while(box.childElementCount>LOG_MAX) box.firstElementChild.remove();
+  if(atBottom) box.scrollTop=box.scrollHeight;
+}
+let rtTimer=0; function renderTasksSoon(){ if(!rtTimer) rtTimer=setTimeout(()=>{rtTimer=0;renderTasks();},250); }
+$("btnCopyLog").onclick=async()=>{ const e=await goCopyLog(); toast(e||"已複製完整紀錄（敏感資訊已遮蔽）"); };
+$("btnOpenLog").onclick=async()=>{ const e=await goOpenLogFile(); if(e) toast(e); };
+$("btnClearLog").onclick=()=>{ $("log").innerHTML=""; toast("已清除畫面（紀錄檔不受影響）"); };
+
+/* ---------------- events from Go ---------------- */
+window.aixai={ on(name,p){
+  switch(name){
+    case "log": appendLog(p); break;
+    case "status": $("status").textContent=p; break;
+    case "env": $("env").textContent=p; break;
+    case "task": {
+      const t=state.tasks[p.index]; if(!t) break;
+      t.state=p.state; if(p.message) t.msg=p.message;
+      if(p.state==="running"){ state.running=p.index; t.pct=null; }
+      renderTasks(); break; }
+    case "done": {
+      setBusy(false);
+      if(state.running>=0 && state.tasks[state.running] && state.tasks[state.running].state==="running"){
+        state.tasks[state.running].state = p.ok ? "done" : (p.stopped ? "pending" : "failed");
+        if(!p.ok && !p.stopped) state.tasks[state.running].msg = p.message.split("\n")[0];
+      }
+      state.running=-1; renderTasks();
+      const open=mkBtn("開啟下載資料夾",()=>goOpenFolder($("output").value));
+      if(p.ok){ showBanner("ok","✓ "+p.message,[open]); toast("全部任務完成"); }
+      else if(p.stopped){ showBanner("warn",p.message); }
+      else if(p.partial){ showBanner("warn",p.message+"\n"+(p.failures||[]).join("\n"),[open]); }
+      else { showBanner("err",p.message,[mkBtn("複製錯誤",()=>goCopyLog().then(e=>toast(e||"已複製紀錄"))),mkBtn("回報這個問題",()=>openFeedback(p.message))]); }
+      $("status").textContent = p.ok ? "全部任務完成。" : (p.stopped ? "已停止。" : "任務未完成。");
+      break; }
+    case "releases": renderReleases(p); break;
+    case "update": renderUpdate(p); break;
+  }
+}};
+
+/* ---------------- update dialog ---------------- */
+$("btnUpdate").onclick=()=>{ $("dlgUpdate").showModal(); $("relState").textContent="正在讀取版本清單…"; $("relState").classList.remove("hidden"); $("relList").innerHTML=""; $("btnInstall").disabled=true; goCheckUpdates(); };
+$("btnRelPage").onclick=()=>goOpenURL((state.releases&&state.releases.releasesUrl)||"https://github.com/");
+function renderReleases(r){
+  state.releases=r;
+  if(r.error){ $("relState").textContent="無法取得版本清單："+r.error; return; }
+  const newer=r.items.filter(i=>i.newer && i.channel==="stable");
+  $("btnUpdate").classList.toggle("has-update", newer.length>0);
+  $("relState").textContent = newer.length ? `有新版本可用：${newer[0].tag}` : "目前已是最新的正式版本。";
+  $("relList").innerHTML=r.items.map((it,i)=>{
+    const badges=[it.current?'<span class="badge cur">目前使用</span>':"", it.tag===r.latestStable?'<span class="badge stable">最新正式版</span>':"",
+      it.channel==="beta"?'<span class="badge beta">測試版</span>':"", !it.current&&!it.newer?'<span class="badge old">較舊</span>':""].join("");
+    return `<label class="rel"><input type="radio" name="rel" value="${esc(it.tag)}" ${it.current||!it.installable?"disabled":""} ${!it.current&&it.tag===r.latestStable&&it.newer?"checked":""}>
+      <div><div class="t">${esc(it.tag)} ${badges}</div><div class="d">${esc(it.published)} · ${esc(it.title)}${it.installable?"":" · 此版本沒有可自動安裝的檔案"}</div>${it.notes?`<pre>${esc(it.notes)}</pre>`:""}</div></label>`;
+  }).join("");
+  const sync=()=>{ const sel=document.querySelector('input[name=rel]:checked'); const it=sel&&r.items.find(x=>x.tag===sel.value);
+    $("btnInstall").disabled=!it; $("btnInstall").textContent = !it ? "安裝所選版本" : (it.newer ? `更新到 ${it.tag}` : `退回到 ${it.tag}`); };
+  $("relList").onchange=sync; sync();
+}
+$("btnInstall").onclick=()=>{
+  const sel=document.querySelector('input[name=rel]:checked'); if(!sel) return;
+  $("btnInstall").disabled=true; $("updProgress").classList.remove("hidden"); $("updBar").style.width="0"; $("updMsg").textContent="準備中…";
+  goInstallRelease(sel.value);
+};
+function renderUpdate(p){
+  $("updProgress").classList.remove("hidden"); $("updBar").style.width=p.percent+"%"; $("updMsg").textContent=p.message;
+  $("updMsg").style.color = p.stage==="error" ? "var(--danger)" : "var(--muted)";
+  if(p.stage==="error") $("btnInstall").disabled=false;
+}
+
+/* ---------------- feedback dialog ---------------- */
+function openFeedback(prefill){
+  $("dlgFeedback").showModal(); $("fbResult").className="banner";
+  if(prefill && !$("fbText").value) $("fbText").value="執行時出現錯誤：\n"+prefill.split("\n").slice(0,4).join("\n")+"\n\n（請補充：操作步驟）";
+  $("fbText").focus();
+}
+$("btnFeedback").onclick=()=>openFeedback();
+document.querySelectorAll(".seg button").forEach(b=>b.onclick=()=>{ document.querySelectorAll(".seg button").forEach(x=>x.setAttribute("aria-pressed","false")); b.setAttribute("aria-pressed","true"); state.kind=b.dataset.kind; });
+function renderThumbs(){
+  $("thumbs").innerHTML=state.images.map((im,i)=>`<div class="thumb" title="${esc(im.name)}">${im.dataUrl?`<img src="${im.dataUrl}" alt="">`:esc(im.name)}<button data-i="${i}" aria-label="移除">×</button></div>`).join("");
+}
+$("thumbs").onclick=e=>{ const b=e.target.closest("button[data-i]"); if(b){ state.images.splice(+b.dataset.i,1); renderThumbs(); } };
+$("btnShot").onclick=async()=>{
+  const d=$("dlgFeedback"); d.close(); await new Promise(r=>setTimeout(r,350));
+  try{ const im=await goCaptureScreenshot(); state.images.push(im); toast("已擷取畫面"); }catch(e){ toast("截圖失敗："+e); }
+  d.showModal(); renderThumbs();
+};
+$("btnAddImg").onclick=async()=>{ const list=await goPickImages(); (list||[]).forEach(im=>state.images.push(im)); renderThumbs(); };
+async function sendFeedback(channel){
+  fieldError(null);
+  if(!$("fbText").value.trim()){ fieldError("fbText","請先寫下想回報的內容。"); return; }
+  try{
+    const res=await goSubmitFeedback({kind:state.kind,text:$("fbText").value,contact:$("fbContact").value,includeDiag:$("fbDiag").checked,images:state.images.map(i=>i.path),channel});
+    const b=$("fbResult"); b.className="banner show ok"; b.textContent=res.message;
+  }catch(e){ const b=$("fbResult"); b.className="banner show err"; b.textContent=String(e); }
+}
+$("btnFbGitHub").onclick=()=>sendFeedback("github");
+$("btnFbMail").onclick=()=>sendFeedback("email");
+$("btnFbCopy").onclick=()=>sendFeedback("copy");
+document.querySelectorAll("dialog [data-close]").forEach(b=>b.onclick=()=>b.closest("dialog").close());
+
+/* ---------------- terms / disclaimer ---------------- */
+const TERMS_VERSION = "2026-10-05";
+function openTerms(required){
+  const d=$("dlgTerms"); d.dataset.required = required ? "1" : "";
+  $("termsVer").textContent = "版本 " + TERMS_VERSION;
+  $("consentRow").classList.toggle("hidden", !required);
+  $("btnTermsAccept").classList.toggle("hidden", !required);
+  $("btnTermsDecline").classList.toggle("hidden", !required);
+  $("btnTermsClose").classList.toggle("hidden", required);
+  $("termsCheck").checked=false; $("btnTermsAccept").disabled=true;
+  d.showModal(); d.querySelector(".dlg-b").scrollTop=0;
+}
+$("dlgTerms").addEventListener("cancel", e=>{ if($("dlgTerms").dataset.required) e.preventDefault(); }); // Esc cannot skip consent
+$("termsCheck").onchange=()=>{ $("btnTermsAccept").disabled=!$("termsCheck").checked; };
+$("btnTermsAccept").onclick=async()=>{ await goAcceptDisclaimer(TERMS_VERSION); $("dlgTerms").dataset.required=""; $("dlgTerms").close(); $("urls").focus(); };
+$("btnTermsDecline").onclick=()=>goQuit();
+$("btnTermsClose").onclick=()=>$("dlgTerms").close();
+$("btnTerms").onclick=()=>openTerms(false);
+
+/* ---------------- boot ---------------- */
+(async function boot(){
+  applyTheme();
+  for(let i=0;i<50 && !window.goInit;i++) await new Promise(r=>setTimeout(r,20));
+  const init=await goInit(); state.init=init; fillForm(init);
+  if(init.settings.disclaimer_accepted !== TERMS_VERSION) openTerms(true); else $("urls").focus();
+  goCheckUpdates(); // quietly mark the 版本 button when a newer release exists
+})();
+</script>
+</body>
+</html>
