@@ -521,6 +521,39 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		default:
 		}
 	}
+	// The page's own JSON responses (player data) are kept in memory for this
+	// capture only, so a larger rendition listed next to the played one can be
+	// chosen afterwards. They are never written to disk or to the log.
+	var pageJSON [][]byte
+	var pageJSONMu sync.Mutex
+	keepPageJSON := func(requestID string) {
+		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
+		if err != nil || reply.Result == nil {
+			return
+		}
+		body := cdpString(reply.Result, "body")
+		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
+			raw, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return
+			}
+			body = string(raw)
+		}
+		if len(body) == 0 || len(body) > maxPageJSONBytes {
+			return
+		}
+		pageJSONMu.Lock()
+		if len(pageJSON) < maxPageJSONCount {
+			pageJSON = append(pageJSON, []byte(body))
+		}
+		pageJSONMu.Unlock()
+	}
+	withPageJSON := func(c browserMediaCandidate) browserMediaCandidate {
+		pageJSONMu.Lock()
+		c.PageJSON = append([][]byte(nil), pageJSON...)
+		pageJSONMu.Unlock()
+		return c
+	}
 	handler := func(msg cdpWireMessage) {
 		p := msg.Params
 		reqID := cdpString(p, "requestId")
@@ -584,6 +617,14 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			emitFor(reqID)
 		case "Network.loadingFinished":
 			if !isTikTokDrama {
+				stateMu.Lock()
+				st := states[reqID]
+				keep := st != nil && st.Status == 200 && strings.Contains(strings.ToLower(st.MimeType), "json") &&
+					(st.RequestType == "XHR" || st.RequestType == "Fetch") && cdpFloat(p, "encodedDataLength") <= maxPageJSONBytes
+				stateMu.Unlock()
+				if keep {
+					go keepPageJSON(reqID)
+				}
 				return
 			}
 			stateMu.Lock()
@@ -654,7 +695,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			return browserMediaCandidate{}, ctx.Err()
 		case <-b.readerDone:
 			if best.URL != "" {
-				return best, nil
+				return withPageJSON(best), nil
 			}
 			return browserMediaCandidate{}, errors.New("DevTools 網路監聽中斷（瀏覽器視窗可能被關閉）")
 		case <-hint.C:
@@ -696,11 +737,11 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		case <-settleC:
 			if best.URL != "" {
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
-				return best, nil
+				return withPageJSON(best), nil
 			}
 		case <-deadline.C:
 			if best.URL != "" {
-				return best, nil
+				return withPageJSON(best), nil
 			}
 			if isTikTokDrama {
 				return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內沒有取得第 %d 集的影片網址；這一集可能無法以你的帳號存取", tiktokEpisode)

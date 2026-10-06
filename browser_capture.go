@@ -41,6 +41,37 @@ type browserMediaCandidate struct {
 	ContentLength  int64
 	Score          int
 	SeenAt         time.Time
+	// PageJSON holds the page's JSON responses seen during this capture (memory
+	// only); PlayedURL is the stream that actually played when URL was
+	// replaced by a larger rendition from that data.
+	PageJSON  [][]byte
+	PlayedURL string
+}
+
+const (
+	maxPageJSONBytes = 2 << 20
+	maxPageJSONCount = 60
+)
+
+// upgradeToBestVariant swaps the played stream for the largest rendition the
+// page itself lists next to it (respecting the 720p mode). Audio-only and
+// format-listing modes keep the played stream.
+func (a *app) upgradeToBestVariant(c browserMediaCandidate, mode int) browserMediaCandidate {
+	if mode != 0 && mode != 2 && mode != 5 {
+		return c
+	}
+	limit := 0
+	if mode == 5 {
+		limit = 720
+	}
+	best, played, ok := betterVariantFromPageJSON(c.PageJSON, c.URL, limit)
+	if !ok {
+		return c
+	}
+	a.postLog(fmt.Sprintf("✓ 頁面播放器提供更高畫質：改下載 %d×%d（預設播放的是 %d×%d）。\r\n", best.Width, best.Height, played.Width, played.Height))
+	c.PlayedURL = c.URL
+	c.URL = best.URL
+	return c
 }
 
 var captureEpisodeRE = regexp.MustCompile(`(?i)(?:episode[-_/])(\d+)(?:/)?$`)
@@ -285,6 +316,13 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 			}
 		}
 		return nil
+	} else if candidate.PlayedURL != "" && ctx.Err() == nil {
+		// The larger rendition could not be downloaded: fall back to the stream
+		// the page actually played, exactly as before.
+		a.postLog("⚠ 較高畫質下載失敗，改用頁面預設播放的畫質。\r\n")
+		candidate.URL = candidate.PlayedURL
+		candidate.PlayedURL = ""
+		return a.downloadBrowserCapturedMedia(ctx, rawURL, candidate, mode, formatID, output, cfg)
 	} else {
 		a.postLog("⚠ 已捕捉到真實媒體網址，但 yt-dlp 下載仍失敗；改用 FFmpeg 並重放瀏覽器原始 Request Headers。\r\n")
 		if ffErr := a.downloadCapturedWithFFmpeg(ctx, rawURL, candidate, mode, output); ffErr == nil {
@@ -358,5 +396,6 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 	if err != nil {
 		return err
 	}
+	candidate = a.upgradeToBestVariant(candidate, mode)
 	return a.downloadBrowserCapturedMedia(ctx, rawURL, candidate, mode, formatID, output, cfg)
 }
