@@ -76,6 +76,21 @@ func pageEpisodeNumber(raw string) int {
 	return 0
 }
 
+// streamHasNumberSegment reports whether a stream path has a plain number as
+// a segment of its own (…/9/stream.m3u8), i.e. it may name an episode.
+func streamHasNumberSegment(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	for _, s := range strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' }) {
+		if allDigits(s) && len(s) <= 4 {
+			return true
+		}
+	}
+	return false
+}
+
 // streamHasEpisode reports whether a stream path has the episode number as a
 // segment of its own (…/7/stream.m3u8). Players often preload the next
 // episodes, so on an episode page the matching stream is the one to keep.

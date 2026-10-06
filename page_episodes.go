@@ -59,20 +59,38 @@ func pageEpisodeEntries(body string) []pageEpisodeEntry {
 // trusts a real episode list (at least three different episode numbers), so
 // a lone number elsewhere in the data is never mistaken for an episode.
 func episodeStreamFromPage(body string, ep int) (string, bool) {
+	stream, _, _ := lookupPageEpisode(body, ep)
+	return stream, stream != ""
+}
+
+// lookupPageEpisode also reports whether the page has an episode list at all
+// and the highest episode in it.
+func lookupPageEpisode(body string, ep int) (stream string, listed bool, maxEp int) {
 	entries := pageEpisodeEntries(body)
 	distinct := map[int]bool{}
 	for _, e := range entries {
 		distinct[e.Episode] = true
+		if e.Episode > maxEp {
+			maxEp = e.Episode
+		}
 	}
 	if ep <= 0 || len(distinct) < 3 {
-		return "", false
+		return "", false, 0
 	}
 	for _, e := range entries {
 		if e.Episode == ep {
-			return e.Stream, true
+			return e.Stream, true, maxEp
 		}
 	}
-	return "", false
+	return "", true, maxEp
+}
+
+// errNoSuchEpisode: the page lists the series' episodes and this one is not
+// among them, so no other method (browser capture included) can find it.
+type errNoSuchEpisode struct{ ep, max int }
+
+func (e *errNoSuchEpisode) Error() string {
+	return fmt.Sprintf("網頁的集數清單中沒有第 %d 集（清單最多到第 %d 集）", e.ep, e.max)
 }
 
 func pageTitle(body string) string {
@@ -87,8 +105,11 @@ func pageTitle(body string) string {
 // episode, named after the page title (which includes the episode number).
 func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body string, mode int, formatID, output string, cfg settings) (bool, error) {
 	ep := pageEpisodeNumber(rawURL)
-	stream, ok := episodeStreamFromPage(body, ep)
-	if !ok {
+	stream, listed, maxEp := lookupPageEpisode(body, ep)
+	if stream == "" {
+		if listed {
+			return true, &errNoSuchEpisode{ep: ep, max: maxEp}
+		}
 		return false, nil
 	}
 	a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))

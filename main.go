@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.8"
+	appVersion = "4.0.9"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -2242,6 +2242,10 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 		if a.stopRequested.Load() {
 			return errStopped
 		}
+		var noEp *errNoSuchEpisode
+		if errors.As(err, &noEp) {
+			return err
+		}
 		a.postLog("⚠ 頁面播放資料中的串流下載失敗，改用其他方式：" + firstLine(err.Error()) + "\r\n")
 	}
 	candidates := extractWebMediaCandidates(body, finalURL)
@@ -2373,6 +2377,10 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			lastErr = err
 			if a.stopRequested.Load() {
 				return errStopped
+			}
+			var noEp *errNoSuchEpisode
+			if errors.As(err, &noEp) {
+				return &commandRunError{Cause: err, Summary: err.Error()}
 			}
 			a.postLog("⚠ 靜態網頁解析未找到串流，改用瀏覽器網路嗅探：" + firstLine(err.Error()) + "\r\n")
 		}

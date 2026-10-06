@@ -122,3 +122,25 @@ func TestEpisodeStreamFromPage(t *testing.T) {
 		t.Fatal("a lone entry is not an episode list")
 	}
 }
+
+func TestStreamHasNumberSegment(t *testing.T) {
+	if !streamHasNumberSegment("https://media.example.com/show_9/zh/9/stream.m3u8") {
+		t.Fatal("numbered stream not recognised")
+	}
+	if streamHasNumberSegment("https://cdn.example.com/video/tos/abc123def/obj/v0201?a=1") {
+		t.Fatal("opaque CDN address taken as numbered")
+	}
+}
+
+func TestLookupPageEpisodeMissing(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 4; i++ {
+		fmt.Fprintf(&b, `{"number":%d,"play_url":"https://media.example.com/s/%d/stream.m3u8"},`, i, i)
+	}
+	if s, listed, max := lookupPageEpisode(b.String(), 9); s != "" || !listed || max != 4 {
+		t.Fatalf("got %q %v %d", s, listed, max)
+	}
+	if _, listed, _ := lookupPageEpisode(`{"number":1,"file":"https://a.example.com/x.mp4"}`, 9); listed {
+		t.Fatal("a lone entry is not a list")
+	}
+}

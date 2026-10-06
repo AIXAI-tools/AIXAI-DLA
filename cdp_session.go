@@ -821,9 +821,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				best = c
 				if best.Score >= 125 {
 					wait := 3500 * time.Millisecond
-					if pageEpisode > 0 && !best.EpisodeMatch {
-						// Possibly a preloaded neighbouring episode: give the
-						// page's own episode stream time to show up.
+					if pageEpisode > 0 && !best.EpisodeMatch && streamHasNumberSegment(best.URL) {
+						// The stream is numbered, but not with this page's
+						// episode: likely a preloaded neighbouring episode, so
+						// give the page's own episode stream time to show up.
 						wait = 12 * time.Second
 					}
 					if settle == nil {
@@ -854,8 +855,8 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
 				if pageEpisode > 0 && best.EpisodeMatch {
 					a.postLog(fmt.Sprintf("✓ 串流網址與第 %d 集相符。\r\n", pageEpisode))
-				} else if pageEpisode > 0 {
-					a.postLog(fmt.Sprintf("⚠ 串流網址看不出集數，無法確認是否為第 %d 集。\r\n", pageEpisode))
+				} else if pageEpisode > 0 && streamHasNumberSegment(best.URL) {
+					a.postLog(fmt.Sprintf("⚠ 沒有找到網址含第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}
 				return withPageJSON(best), nil
 			}
