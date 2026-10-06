@@ -126,8 +126,8 @@ func resolveCaptureBrowser(pref string) (b captureBrowserInfo, path, note string
 			return info, p, "", nil
 		}
 	}
-	// Fallback order keeps Chrome last: its branded build ignores
-	// --load-extension, so the extension backup path cannot run there.
+	// Fallback order: Edge first (installed on every Windows PC and the
+	// browser this capture path has been verified with most).
 	for _, key := range []string{"edge", "brave", "vivaldi", "chrome"} {
 		info, _ := captureBrowserByKey(key)
 		if p := info.installedPath(); p != "" {

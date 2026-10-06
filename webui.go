@@ -509,6 +509,9 @@ func (a *app) startFromUI(req startRequest) startResponse {
 			if err != nil {
 				return startResponse{Error: err.Error(), Field: "sequence"}
 			}
+			if episodeFromQuery(baseURL) == 0 && len(series) > 0 && episodeFromQuery(series[0]) > 0 {
+				notes = append(notes, "ℹ 網址中沒有集數，改以「?ep=集數」逐集開啟，並用瀏覽器實際播放擷取（較慢，每集約多 10～30 秒）。若網站不支援這個參數，偵測到重複影片會自動停止。\r\n")
+			}
 			expanded = append(expanded, series...)
 		}
 		urls = expanded

@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.5"
+	appVersion = "4.0.6"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -502,6 +502,8 @@ type app struct {
 	// by the worker goroutine) so a truncated result can be fetched again.
 	lastYtArgs  []string
 	lastYtFiles []string
+	// lastCaptureFile is the file saved by the latest browser-capture download.
+	lastCaptureFile string
 
 	// Coalesce UI wake-up messages so heavy command output cannot flood
 	// the Win32 message queue and make the window appear unresponsive.
@@ -977,6 +979,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	a.captureStartFailed.Store(false)
 	a.loginCancelled.Store(false)
 	pacer := newSafePacer()
+	episodes := newEpisodeBatch()
 	if safe {
 		a.postLog(safeModeIntro(urls, cfg))
 	} else {
@@ -998,8 +1001,25 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// These URL families are currently known to fall through yt-dlp's generic
 		// extractor. Route them directly to AIXAI's dedicated pipeline so a 50-episode
 		// batch does not waste time failing and checking for updates on every episode.
-		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" {
-			err := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
+		// Episodes chosen by a query parameter on a page that keeps one address
+		// for every episode: only the capture browser loads the right one
+		// (see episode_capture.go).
+		episodeByQuery := cfg.Sequence && site == "" && episodeFromQuery(rawURL) > 0
+		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" || episodeByQuery {
+			var err error
+			if episodeByQuery {
+				err = a.runEpisodeCapture(ctx, episodes, rawURL, mode, formatID, output, cfg)
+				if err != nil && !a.stopRequested.Load() && isEpisodeRepeated(err) {
+					a.emitTask(i, "failed", firstLine(err.Error()))
+					return &commandRunError{Cause: err, Summary: err.Error()}
+				}
+				if err != nil && !a.stopRequested.Load() && episodes.failures >= 2 {
+					a.emitTask(i, "failed", firstLine(err.Error()))
+					return &commandRunError{Cause: err, Summary: "連續兩集無法在瀏覽器播放，已停止整批。\n\n常見原因：後面的集數需要登入或解鎖（本工具不會嘗試繞過），或這部作品沒有這麼多集。\n\n最後一次錯誤：" + firstLine(err.Error())}
+				}
+			} else {
+				err = a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
+			}
 			if err == nil && !a.stopRequested.Load() {
 				err = a.repairTruncatedDownload(ctx, cfg)
 			}
@@ -3182,7 +3202,15 @@ func expandSequenceURL(raw string, startN, endN int) ([]string, error) {
 		}
 	}
 	if kind == "" {
-		return nil, fmt.Errorf("無法判斷集數位置。支援網址結尾為 /episode/數字、episode-數字，或最後一段為數字的格式：%s", raw)
+		// One-page players keep the same address for every episode. Many of
+		// them open a given episode from an "ep" query parameter (the form
+		// their share links use); such addresses are played in the capture
+		// browser one by one, and a repeated video stops the batch, so a
+		// page that ignores the parameter cannot save episode 1 over and over.
+		if u.Query().Get("ep") != "" { // an "ep" value we cannot read; do not overwrite it
+			return nil, fmt.Errorf("無法判斷集數位置：%s", raw)
+		}
+		kind = "query:ep"
 	}
 
 	result := make([]string, 0, endN-startN+1)

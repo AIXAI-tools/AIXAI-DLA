@@ -4,14 +4,8 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,14 +13,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-// browserCaptureEvent is sent by the temporary AIXAI capture extension that is
-// loaded only into the dedicated Edge/Chromium profile started by this app.
-// Request headers are kept in memory only and are never written to the log.
+// browserCaptureEvent describes one media request seen by the DevTools
+// listener of the dedicated capture browser. Request headers are kept in memory only and are never written to the log.
 type browserCaptureEvent struct {
 	Kind            string            `json:"kind"`
 	URL             string            `json:"url"`
@@ -52,14 +44,6 @@ type browserMediaCandidate struct {
 }
 
 var captureEpisodeRE = regexp.MustCompile(`(?i)(?:episode[-_/])(\d+)(?:/)?$`)
-
-func randomCaptureToken() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
-}
 
 func captureHeader(headers map[string]string, name string) string {
 	for k, v := range headers {
@@ -166,127 +150,6 @@ func betterCaptureCandidate(newC, oldC browserMediaCandidate) bool {
 	return newC.SeenAt.After(oldC.SeenAt)
 }
 
-func writeCaptureExtension(dir, endpoint string) error {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	manifest := `{
-  "manifest_version": 3,
-  "name": "AIXAI Media Capture Helper",
-  "version": "1.0.0",
-  "description": "Local-only media request detector for AIXAI YT-DLP",
-  "permissions": ["webRequest", "tabs"],
-  "host_permissions": ["http://*/*", "https://*/*"],
-  "background": {"service_worker": "background.js"},
-  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_start", "all_frames": true}]
-}`
-
-	background := fmt.Sprintf(`const ENDPOINT = %q;
-const requestState = new Map();
-function hobj(list) {
-  const out = {};
-  for (const h of (list || [])) {
-    if (!h || !h.name) continue;
-    out[String(h.name).toLowerCase()] = String(h.value || "");
-  }
-  return out;
-}
-function looksMedia(url, type, responseHeaders) {
-  const u = String(url || "").toLowerCase();
-  const ct = String((responseHeaders || {})["content-type"] || "").toLowerCase();
-  if (/\.(?:ts|m4s|cmfv|cmfa|aac|vtt|srt)(?:$|[?#])/i.test(u)) return false;
-  return /\.(?:m3u8|mpd|mp4|m4v|webm)(?:$|[?#])/i.test(u)
-    || ct.includes("mpegurl") || ct.includes("dash+xml") || ct.startsWith("video/")
-    || type === "media";
-}
-async function post(payload) {
-  try {
-    await fetch(ENDPOINT, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(payload)});
-  } catch (_) {}
-}
-post({kind:"ready"});
-function emit(details, responseHeaders) {
-  const state = requestState.get(details.requestId) || {};
-  const finish = (tab) => post({
-    kind: "network",
-    url: details.url,
-    pageUrl: (tab && tab.url) || state.pageUrl || details.initiator || "",
-    title: (tab && tab.title) || "",
-    requestType: details.type || state.type || "",
-    initiator: details.initiator || state.initiator || "",
-    requestHeaders: state.requestHeaders || {},
-    responseHeaders: responseHeaders || {}
-  });
-  if (details.tabId >= 0) {
-    chrome.tabs.get(details.tabId, tab => {
-      if (chrome.runtime.lastError) finish(null); else finish(tab);
-    });
-  } else finish(null);
-}
-chrome.webRequest.onBeforeSendHeaders.addListener(details => {
-  const rh = hobj(details.requestHeaders);
-  requestState.set(details.requestId, {requestHeaders: rh, type: details.type || "", initiator: details.initiator || ""});
-  if (looksMedia(details.url, details.type, {})) emit(details, {});
-}, {urls:["<all_urls>"], types:["media","xmlhttprequest","object","other"]}, ["requestHeaders", "extraHeaders"]);
-chrome.webRequest.onResponseStarted.addListener(details => {
-  const headers = hobj(details.responseHeaders);
-  if (looksMedia(details.url, details.type, headers)) emit(details, headers);
-}, {urls:["<all_urls>"], types:["media","xmlhttprequest","object","other"]}, ["responseHeaders", "extraHeaders"]);
-chrome.webRequest.onCompleted.addListener(details => requestState.delete(details.requestId), {urls:["<all_urls>"]});
-chrome.webRequest.onErrorOccurred.addListener(details => requestState.delete(details.requestId), {urls:["<all_urls>"]});
-chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (!msg) return;
-  if (msg.kind === "hello") { post({kind:"ready"}); return; }
-  if (msg.kind !== "dom") return;
-  const tab = sender && sender.tab;
-  post({kind:"dom", url:msg.url || "", pageUrl:msg.pageUrl || (tab && tab.url) || "", title:msg.title || (tab && tab.title) || "", requestType:"dom", initiator:"", requestHeaders:{}, responseHeaders:{}});
-});
-`, endpoint)
-
-	content := `(() => {
-  try { chrome.runtime.sendMessage({kind:"hello"}); } catch (_) {}
-  const seen = new Set();
-  const mediaRe = /\.(?:m3u8|mpd|mp4|m4v|webm)(?:$|[?#])/i;
-  function report(raw) {
-    try {
-      const u = new URL(raw, location.href).href;
-      if (!/^https?:/i.test(u) || seen.has(u)) return;
-      seen.add(u);
-      chrome.runtime.sendMessage({kind:"dom", url:u, pageUrl:location.href, title:document.title || ""});
-    } catch (_) {}
-  }
-  function scan() {
-    document.querySelectorAll("video,source").forEach(el => {
-      if (el.src) report(el.src);
-      const s = el.getAttribute && el.getAttribute("src");
-      if (s) report(s);
-    });
-    try {
-      performance.getEntriesByType("resource").forEach(e => { if (mediaRe.test(e.name || "")) report(e.name); });
-    } catch (_) {}
-  }
-  function tryPlay() {
-    document.querySelectorAll("video").forEach(v => {
-      try { v.muted = true; v.autoplay = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
-    });
-  }
-  scan(); tryPlay();
-  new MutationObserver(() => { scan(); tryPlay(); }).observe(document.documentElement || document, {subtree:true, childList:true, attributes:true, attributeFilter:["src"]});
-  setInterval(() => { scan(); tryPlay(); }, 1500);
-})();`
-
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "background.js"), []byte(background), 0644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "content.js"), []byte(content), 0644); err != nil {
-		return err
-	}
-	return nil
-}
-
 func killStandaloneProcessTree(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -311,178 +174,6 @@ func killStandaloneProcessTree(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (browserMediaCandidate, error) {
-	info, browserPath, err := a.findCaptureBrowser()
-	if err != nil {
-		return browserMediaCandidate{}, err
-	}
-	browserName := info.Name
-	// Google Chrome ignores --load-extension since version 137, and forcing it
-	// back on with a feature switch is a pattern antivirus heuristics treat as
-	// malware (Windows Defender flagged a test build for exactly this). Chrome
-	// therefore uses the DevTools path only.
-	if info.Key == "chrome" {
-		return browserMediaCandidate{}, errors.New("Google Chrome 不支援擴充模組備援；可在「進階設定 → 擷取用瀏覽器」改選 Microsoft Edge 再試")
-	}
-	token, err := randomCaptureToken()
-	if err != nil {
-		return browserMediaCandidate{}, err
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return browserMediaCandidate{}, fmt.Errorf("建立本機媒體嗅探通道失敗：%w", err)
-	}
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/capture/%s", port, token)
-	extDir := filepath.Join(a.appDir, "capture-extension")
-	if err := writeCaptureExtension(extDir, endpoint); err != nil {
-		return browserMediaCandidate{}, fmt.Errorf("建立瀏覽器嗅探模組失敗：%w", err)
-	}
-
-	events := make(chan browserMediaCandidate, 256)
-	var helperReady atomic.Bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("/capture/"+token, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method", http.StatusMethodNotAllowed)
-			return
-		}
-		defer r.Body.Close()
-		dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-		var ev browserCaptureEvent
-		if err := dec.Decode(&ev); err != nil {
-			http.Error(w, "json", http.StatusBadRequest)
-			return
-		}
-		if ev.Kind == "ready" {
-			helperReady.Store(true)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if candidate, ok := mediaCandidateScore(ev); ok {
-			select {
-			case events <- candidate:
-			default:
-			}
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
-	readyPath := "/ready/" + token
-	startPath := "/start/" + token
-	mux.HandleFunc(readyPath, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if helperReady.Load() {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-	})
-	targetJSON, _ := json.Marshal(rawURL)
-	mux.HandleFunc(startPath, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>AIXAI 媒體監聽準備中</title><body style="font-family:sans-serif;padding:24px"><h2>AIXAI 正在啟動媒體監聽…</h2><p>監聽器就緒後會自動前往影片頁面，請勿關閉此視窗。</p><script>const target=%s;const ready=%q;async function go(){try{const r=await fetch(ready,{cache:'no-store'});if(r.status===204){location.replace(target);return}}catch(e){}setTimeout(go,250)}go();setTimeout(()=>location.replace(target),8000);</script>`, string(targetJSON), readyPath)
-	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 3 * time.Second}
-	serveDone := make(chan struct{})
-	go func() {
-		_ = srv.Serve(ln)
-		close(serveDone)
-	}()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = srv.Shutdown(shutdownCtx)
-		cancel()
-		select {
-		case <-serveDone:
-		case <-time.After(2 * time.Second):
-		}
-	}()
-
-	profileDir := filepath.Join(a.appDir, "capture-browser-profile")
-	if info.Key != "edge" {
-		profileDir += "-" + info.Key
-	}
-	_ = os.MkdirAll(profileDir, 0755)
-	prepareCaptureProfile(profileDir)
-	args := []string{
-		"--user-data-dir=" + profileDir,
-		"--disable-extensions-except=" + extDir,
-		"--load-extension=" + extDir,
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--autoplay-policy=no-user-gesture-required",
-		"--disable-background-timer-throttling",
-		"--disable-backgrounding-occluded-windows",
-		"--disable-renderer-backgrounding",
-		"--new-window",
-		"--disable-session-crashed-bubble",
-		"--hide-crash-restore-bubble",
-	}
-	if strings.Contains(strings.ToLower(browserName), "edge") {
-		args = append(args, "--disable-features=msEdgeFirstRunExperience", "--edge-skip-compat-layer-relaunch")
-	}
-	startURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, startPath)
-	args = append(args, startURL)
-	cmd := exec.Command(browserPath, args...)
-	cmd.Env = browserEnv()
-	if err := cmd.Start(); err != nil {
-		return browserMediaCandidate{}, fmt.Errorf("啟動 %s 媒體嗅探視窗失敗：%w", browserName, err)
-	}
-	// Like the DevTools browser: end it together with this app, even on a crash.
-	bindToAppLifetime(cmd.Process.Pid)
-	defer killStandaloneProcessTree(cmd)
-
-	a.postLog("→ 啟動 " + browserName + " 擴充模組媒體嗅探（第二備援）；會先確認監聽器就緒，再自動導向影片頁。\r\n")
-	a.postLog("ℹ 嗅探使用 AIXAI 專用瀏覽器設定檔；不會讀取或寫出 Cookie 到紀錄。若網站需要登入，可在嗅探視窗登入一次，之後會沿用該專用設定檔。\r\n")
-	a.postStatus("狀態：正在以瀏覽器嗅探實際影音串流…")
-
-	deadline := time.NewTimer(35 * time.Second)
-	defer deadline.Stop()
-	var best browserMediaCandidate
-	var settle *time.Timer
-	var settleC <-chan time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return browserMediaCandidate{}, ctx.Err()
-		case c := <-events:
-			if betterCaptureCandidate(c, best) {
-				best = c
-				if best.Score >= 125 {
-					if settle == nil {
-						settle = time.NewTimer(2500 * time.Millisecond)
-						settleC = settle.C
-					} else {
-						if !settle.Stop() {
-							select {
-							case <-settle.C:
-							default:
-							}
-						}
-						settle.Reset(2500 * time.Millisecond)
-					}
-				}
-			}
-		case <-settleC:
-			if best.URL != "" {
-				return best, nil
-			}
-		case <-deadline.C:
-			if best.URL != "" {
-				return best, nil
-			}
-			return browserMediaCandidate{}, errors.New("瀏覽器已開啟頁面，但 35 秒內沒有偵測到 HLS／DASH／MP4 媒體請求；可能需要手動播放影片、登入網站，或媒體受 DRM 保護")
-		}
-	}
-}
-
 func (a *app) captureMediaWithBrowser(ctx context.Context, rawURL, cookieFile string) (browserMediaCandidate, error) {
 	// Primary path: Chrome DevTools Protocol. Network.enable is active before
 	// navigation, so immediate HLS/MP4 requests cannot race past the listener.
@@ -490,20 +181,9 @@ func (a *app) captureMediaWithBrowser(ctx context.Context, rawURL, cookieFile st
 	if cdpErr == nil {
 		return candidate, nil
 	}
-	if a.stopRequested.Load() {
-		return browserMediaCandidate{}, cdpErr
-	}
-	// The extension fallback uses a separate profile without the user's sign-in,
-	// so it cannot help with pages that require signing in.
-	if _, _, isTikTokDrama := parseTikTokShortDramaURL(rawURL); isTikTokDrama {
-		return browserMediaCandidate{}, cdpErr
-	}
-	a.postLog("⚠ DevTools 媒體監聽未成功，改用瀏覽器擴充模組相容路徑：" + firstLine(cdpErr.Error()) + "\r\n")
-	candidate, extErr := a.captureMediaWithExtension(ctx, rawURL)
-	if extErr == nil {
-		return candidate, nil
-	}
-	return browserMediaCandidate{}, fmt.Errorf("DevTools 監聽：%v；擴充模組監聽：%v", cdpErr, extErr)
+	// There is deliberately no second capture path: the DevTools listener is
+	// the only supported way to observe the capture browser.
+	return browserMediaCandidate{}, cdpErr
 }
 
 func sanitizeCapturedHeader(v string) string {
@@ -540,6 +220,18 @@ func capturedOutputBase(rawURL, title string) string {
 				return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", series, ep))
 			}
 		}
+	}
+	// One address for every episode (?ep=N): the page title is the same for
+	// all of them, so the episode number must be part of the name.
+	if ep := episodeFromQuery(rawURL); ep > 0 {
+		name := safeWindowsBaseName(title)
+		if name == "" {
+			name = seriesNameFromPath(rawURL)
+		}
+		if name == "" {
+			name = "Video"
+		}
+		return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", name, ep))
 	}
 	if strings.TrimSpace(title) != "" {
 		return safeWindowsBaseName(title)
@@ -587,6 +279,11 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	a.postLog(fmt.Sprintf("✓ 瀏覽器偵測到 %s 媒體串流（%s），正在交由 yt-dlp 下載。\r\n", candidate.Kind, hostOnly(candidate.URL)))
 	a.postStatus("狀態：已捕捉實際媒體串流，正在下載…")
 	if err := a.runCommand(ctx, args); err == nil {
+		for _, f := range a.lastYtFiles {
+			if validFile(f, 1) {
+				a.lastCaptureFile = f
+			}
+		}
 		return nil
 	} else {
 		a.postLog("⚠ 已捕捉到真實媒體網址，但 yt-dlp 下載仍失敗；改用 FFmpeg 並重放瀏覽器原始 Request Headers。\r\n")
@@ -644,6 +341,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 		return errors.New("FFmpeg 執行完成但沒有產生有效媒體檔")
 	}
 	a.postLog("✓ FFmpeg 已使用瀏覽器實際播放請求完成下載：" + dest + "\r\n")
+	a.lastCaptureFile = dest
 	return nil
 }
 
