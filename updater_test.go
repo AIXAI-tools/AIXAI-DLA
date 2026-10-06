@@ -132,3 +132,71 @@ func TestChecksumGuardsDownload(t *testing.T) {
 		t.Fatal("tampered file must not match")
 	}
 }
+
+func TestFetchReleasesFallsBackToWebWhenLimited(t *testing.T) {
+	repo := "/" + updateRepoOwner + "/" + updateRepoName
+	feed := `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">
+<entry><id>tag:github.com,2008:Repository/1/v4.0.4</id><updated>2026-10-06T04:40:21Z</updated>
+<link rel="alternate" type="text/html" href="https://example/v4.0.4"/><title>v4.0.4</title>
+<content type="html">&lt;h3&gt;修正&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;A &amp;amp; B&lt;/li&gt;&lt;/ul&gt;</content></entry>
+<entry><id>tag:github.com,2008:Repository/1/v4.1.0-beta.1</id><updated>2026-10-06T04:00:00Z</updated><title>beta</title><content type="html"></content></entry>
+<entry><id>tag:github.com,2008:Repository/1/v3.0.0</id><updated>2026-01-01T00:00:00Z</updated><title>old</title><content type="html"></content></entry>
+</feed>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos" + repo + "/releases":
+			w.WriteHeader(http.StatusForbidden)
+		case repo + "/releases.atom":
+			_, _ = w.Write([]byte(feed))
+		case repo + "/releases/download/v4.0.4/" + checksumAsset:
+			_, _ = w.Write([]byte(strings.Repeat("a", 64) + "  AIXAI_AllInOne_Downloader_v4_0_4_Windows_x64.exe\n" + strings.Repeat("b", 64) + "  AIXAI_AllInOne_Downloader_v4_0_4_Windows_x64_Full.zip\n"))
+		case repo + "/releases/download/v4.1.0-beta.1/" + checksumAsset:
+			_, _ = w.Write([]byte(strings.Repeat("c", 64) + "  AIXAI_AllInOne_Downloader_v4_1_0_Windows_x64.exe\n"))
+		default:
+			http.NotFound(w, r) // v3.0.0 has no checksum file
+		}
+	}))
+	defer srv.Close()
+	oldAPI, oldWeb := updateAPIBase, updateWebBase
+	updateAPIBase, updateWebBase = srv.URL, srv.URL
+	defer func() { updateAPIBase, updateWebBase = oldAPI, oldWeb }()
+
+	list, err := fetchReleases(context.Background())
+	if err != nil {
+		t.Fatalf("fallback failed: %v", err)
+	}
+	got := buildUIReleasesFor(list, "4.0.3")
+	byTag := map[string]uiRelease{}
+	for _, it := range got.Items {
+		byTag[it.Tag] = it
+	}
+	if got.LatestStable != "v4.0.4" || !byTag["v4.0.4"].Newer || !byTag["v4.0.4"].Installable {
+		t.Fatalf("v4.0.4 should be the installable latest stable: %+v", got)
+	}
+	if byTag["v4.1.0-beta.1"].Channel != "beta" {
+		t.Error("pre-release tag must be beta")
+	}
+	if byTag["v3.0.0"].Installable {
+		t.Error("release without SHA256SUMS.txt must not be installable")
+	}
+	if !strings.Contains(byTag["v4.0.4"].Notes, "- A & B") {
+		t.Errorf("notes not converted to text: %q", byTag["v4.0.4"].Notes)
+	}
+	exe, _ := findAsset(list[0], func(n string) bool { return strings.HasSuffix(n, exeAssetSuffix) })
+	if exe.URL != srv.URL+repo+"/releases/download/v4.0.4/AIXAI_AllInOne_Downloader_v4_0_4_Windows_x64.exe" {
+		t.Errorf("exe URL = %s", exe.URL)
+	}
+}
+
+func TestFetchReleasesKeepsLimitErrorWhenWebFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	oldAPI, oldWeb := updateAPIBase, updateWebBase
+	updateAPIBase, updateWebBase = srv.URL, srv.URL
+	defer func() { updateAPIBase, updateWebBase = oldAPI, oldWeb }()
+	if _, err := fetchReleases(context.Background()); err == nil || !strings.Contains(err.Error(), "限制查詢次數") {
+		t.Fatalf("want the limit message, got %v", err)
+	}
+}

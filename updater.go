@@ -77,7 +77,25 @@ func releasesPageURL() string {
 	return fmt.Sprintf("https://github.com/%s/%s/releases", updateRepoOwner, updateRepoName)
 }
 
+// errReleaseAPILimited is returned when GitHub's API refuses the request
+// because of its per-IP limit (60 per hour without signing in), which users
+// behind a shared IP can reach quickly.
+var errReleaseAPILimited = errors.New("GitHub 暫時限制查詢次數，請稍後（約一小時內）再試")
+
+// fetchReleases reads the release list from the GitHub API and, when the API
+// limit is reached, from the public release pages instead (see updater_web.go).
 func fetchReleases(ctx context.Context) ([]ghRelease, error) {
+	list, err := fetchReleasesFromAPI(ctx)
+	if !errors.Is(err, errReleaseAPILimited) {
+		return list, err
+	}
+	if webList, webErr := fetchReleasesFromWeb(ctx); webErr == nil {
+		return webList, nil
+	}
+	return nil, err
+}
+
+func fetchReleasesFromAPI(ctx context.Context) ([]ghRelease, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=30", updateAPIBase, updateRepoOwner, updateRepoName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -94,7 +112,7 @@ func fetchReleases(ctx context.Context) ([]ghRelease, error) {
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, errors.New("找不到版本發佈頁。專案可能尚未公開，公開後即可在這裡更新")
 	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests:
-		return nil, errors.New("GitHub 暫時限制查詢次數，請稍後（約一小時內）再試")
+		return nil, errReleaseAPILimited
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("GitHub 回應 HTTP %d", resp.StatusCode)
 	}
