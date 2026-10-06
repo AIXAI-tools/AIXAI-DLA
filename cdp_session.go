@@ -374,8 +374,10 @@ func (a *app) captureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	return b, nil
 }
 
-// closeCaptureBrowser is called when a download task ends.
+// closeCaptureBrowser is called when the last running task ends.
 func (a *app) closeCaptureBrowser() {
+	a.captureSem <- struct{}{}
+	defer func() { <-a.captureSem }()
 	if a.capBrowser != nil {
 		a.capBrowser.close()
 		a.capBrowser = nil
@@ -456,11 +458,19 @@ func (a *app) ensureTikTokLogin(ctx context.Context, b *cdpBrowser) error {
 // captureMediaWithCDP opens one page in the shared capture browser and waits
 // for its real media stream.
 func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string) (browserMediaCandidate, error) {
+	// One capture browser serves every task: tasks take turns using it.
+	select {
+	case a.captureSem <- struct{}{}:
+	case <-ctx.Done():
+		return browserMediaCandidate{}, ctx.Err()
+	}
+	defer func() { <-a.captureSem }()
 	b, err := a.captureBrowser(ctx)
 	if err != nil {
 		return browserMediaCandidate{}, err
 	}
 	_, tiktokEpisode, isTikTokDrama := parseTikTokShortDramaURL(rawURL)
+	pageEpisode := pageEpisodeNumber(rawURL)
 
 	states := map[string]*cdpRequestState{}
 	candidates := make(chan browserMediaCandidate, 128)
@@ -548,6 +558,58 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		}
 		pageJSONMu.Unlock()
 	}
+	// Video ads: the clips listed in the page's VAST responses and the sources
+	// of ad <video> elements are never the episode. Kept for this capture only.
+	adURLs := map[string]bool{}
+	var adMu sync.Mutex
+	adNoticed := false
+	noteAds := func(urls []string) {
+		if len(urls) == 0 {
+			return
+		}
+		adMu.Lock()
+		for _, u := range urls {
+			adURLs[adURLKey(u)] = true
+		}
+		first := !adNoticed
+		adNoticed = true
+		adMu.Unlock()
+		if first {
+			a.postLog("ℹ 頁面正在播放影片廣告：廣告影片不會被下載，等待正片開始播放。\r\n")
+		}
+	}
+	isAd := func(raw string) bool {
+		adMu.Lock()
+		defer adMu.Unlock()
+		return adURLs[adURLKey(raw)]
+	}
+	inspectVAST := func(requestID string) {
+		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
+		if err != nil || reply.Result == nil {
+			return
+		}
+		body := cdpString(reply.Result, "body")
+		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
+			raw, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return
+			}
+			body = string(raw)
+		}
+		noteAds(vastMediaFiles(body))
+	}
+	// checkAdVideos asks the page which <video> elements are ads (marked as such
+	// by their own or a parent's id/class) and records what they play.
+	checkAdVideos := func() {
+		reply, err := b.pageCall("Runtime.evaluate", map[string]interface{}{"expression": cdpAdVideoScript, "returnByValue": true})
+		if err != nil {
+			return
+		}
+		res, _ := reply.Result["result"].(map[string]interface{})
+		var urls []string
+		_ = json.Unmarshal([]byte(cdpString(res, "value")), &urls)
+		noteAds(urls)
+	}
 	withPageJSON := func(c browserMediaCandidate) browserMediaCandidate {
 		pageJSONMu.Lock()
 		c.PageJSON = append([][]byte(nil), pageJSON...)
@@ -621,9 +683,15 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				st := states[reqID]
 				keep := st != nil && st.Status == 200 && strings.Contains(strings.ToLower(st.MimeType), "json") &&
 					(st.RequestType == "XHR" || st.RequestType == "Fetch") && cdpFloat(p, "encodedDataLength") <= maxPageJSONBytes
+				vast := st != nil && st.Status == 200 && (st.RequestType == "XHR" || st.RequestType == "Fetch") &&
+					(strings.Contains(strings.ToLower(st.MimeType), "xml") || strings.Contains(strings.ToLower(st.URL), "vast")) &&
+					cdpFloat(p, "encodedDataLength") <= maxPageJSONBytes
 				stateMu.Unlock()
 				if keep {
 					go keepPageJSON(reqID)
+				}
+				if vast {
+					go inspectVAST(reqID)
 				}
 				return
 			}
@@ -686,6 +754,17 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	defer deadline.Stop()
 	hint := time.NewTimer(25 * time.Second)
 	defer hint.Stop()
+	adCheck := time.NewTicker(1500 * time.Millisecond)
+	defer adCheck.Stop()
+	// userWait is set once the window was shown for the user to act in (press
+	// play, close an ad, finish a check); the capture then waits longer.
+	userWait := false
+	defer func() {
+		if userWait {
+			a.loginBrowser.Store(nil)
+			a.emit("login", map[string]interface{}{"waiting": false})
+		}
+	}()
 	var best browserMediaCandidate
 	var settle *time.Timer
 	var settleC <-chan time.Time
@@ -694,16 +773,37 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		case <-ctx.Done():
 			return browserMediaCandidate{}, ctx.Err()
 		case <-b.readerDone:
-			if best.URL != "" {
+			if best.URL != "" && !isAd(best.URL) {
 				return withPageJSON(best), nil
 			}
 			return browserMediaCandidate{}, errors.New("DevTools 網路監聽中斷（瀏覽器視窗可能被關閉）")
+		case <-adCheck.C:
+			if !isTikTokDrama {
+				go checkAdVideos()
+			}
 		case <-hint.C:
-			if best.URL == "" {
+			if best.URL == "" && !isTikTokDrama {
+				userWait = true
+				b.reveal(a.scale)
+				a.loginBrowser.Store(b)
+				a.emit("login", map[string]interface{}{"waiting": true, "reason": "action"})
+				a.postLog("ℹ 25 秒內尚未偵測到正片串流，已把瀏覽器視窗叫到前面：若畫面正在播廣告、要求按播放、登入或驗證，請直接在該視窗操作（本工具不會自動點擊廣告）。程式最多再等 10 分鐘。\r\n")
+				a.postStatus("狀態：等待正片開始播放（可在瀏覽器視窗操作，最多 10 分鐘）…")
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				deadline.Reset(10 * time.Minute)
+			} else if best.URL == "" {
 				b.reveal(a.scale)
 				a.postLog("ℹ 25 秒內尚未偵測到影片串流，已把瀏覽器視窗叫到前面：若畫面要求登入、驗證或需要按播放，請直接在該視窗操作，程式會繼續監聽。\r\n")
 			}
 		case c := <-candidates:
+			if isAd(c.URL) {
+				continue
+			}
 			// Episode-matched TikTok API streams are authoritative: return at once
 			// instead of risking a preloaded neighbouring episode.
 			if c.Score >= 200 {
@@ -716,10 +816,16 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			if isTikTokDrama {
 				continue
 			}
+			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode)
 			if betterCaptureCandidate(c, best) {
 				best = c
 				if best.Score >= 125 {
 					wait := 3500 * time.Millisecond
+					if pageEpisode > 0 && !best.EpisodeMatch {
+						// Possibly a preloaded neighbouring episode: give the
+						// page's own episode stream time to show up.
+						wait = 12 * time.Second
+					}
 					if settle == nil {
 						settle = time.NewTimer(wait)
 						settleC = settle.C
@@ -735,18 +841,38 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				}
 			}
 		case <-settleC:
+			if best.URL != "" && !isTikTokDrama {
+				// Ad <video> elements are checked on a timer; check once more
+				// right before accepting, so an ad clip is never returned.
+				checkAdVideos()
+				if isAd(best.URL) {
+					best = browserMediaCandidate{}
+					continue
+				}
+			}
 			if best.URL != "" {
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
+				if pageEpisode > 0 && best.EpisodeMatch {
+					a.postLog(fmt.Sprintf("✓ 串流網址與第 %d 集相符。\r\n", pageEpisode))
+				} else if pageEpisode > 0 {
+					a.postLog(fmt.Sprintf("⚠ 串流網址看不出集數，無法確認是否為第 %d 集。\r\n", pageEpisode))
+				}
 				return withPageJSON(best), nil
 			}
 		case <-deadline.C:
-			if best.URL != "" {
+			if best.URL != "" && !isAd(best.URL) {
 				return withPageJSON(best), nil
 			}
 			if isTikTokDrama {
 				return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內沒有取得第 %d 集的影片網址；這一集可能無法以你的帳號存取", tiktokEpisode)
 			}
-			return browserMediaCandidate{}, errors.New("DevTools 網路監聽已正常啟動，但 45 秒內未出現可下載的 HLS／DASH／MP4；若網站畫面要求登入或按播放，請在自動開啟的瀏覽器完成一次操作後重試")
+			adMu.Lock()
+			sawAd := adNoticed
+			adMu.Unlock()
+			if sawAd {
+				return browserMediaCandidate{}, errors.New("頁面只播放了廣告，等待期間正片沒有開始播放；可在瀏覽器視窗看完或關閉廣告後重試")
+			}
+			return browserMediaCandidate{}, errors.New("DevTools 網路監聽已正常啟動，但等待期間未出現可下載的 HLS／DASH／MP4；若網站畫面要求登入或按播放，請在自動開啟的瀏覽器完成一次操作後重試")
 		}
 	}
 }

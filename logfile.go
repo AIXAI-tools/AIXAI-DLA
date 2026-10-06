@@ -15,7 +15,12 @@ import (
 )
 
 const (
-	logFileName        = "AIXAI_下載紀錄.txt"
+	// Each press of 開始下載 gets its own file in this subfolder of the download
+	// folder, so a report only carries the run it is about.
+	runLogDirName  = "AIXAI_下載紀錄"
+	runLogPrefix   = "AIXAI_下載紀錄_"
+	appLogFileName = "AIXAI_程式紀錄.txt" // messages outside a run, in the app data folder
+
 	maxLogFileBytes    = 20 << 20 // rotate the on-disk log at ~20 MiB
 	maxSessionLogBytes = 8 << 20  // in-memory copy kept for the 複製 Log button
 
@@ -55,6 +60,12 @@ func (a *app) recordLog(s string) {
 	if s == "" {
 		return
 	}
+	a.recordSession(s)
+	a.writeLogFile(s)
+}
+
+// recordSession keeps s in the in-memory copy used by 複製 Log.
+func (a *app) recordSession(s string) {
 	a.sessionMu.Lock()
 	a.sessionLog = append(a.sessionLog, s)
 	a.sessionBytes += len(s)
@@ -63,7 +74,6 @@ func (a *app) recordLog(s string) {
 		a.sessionLog = a.sessionLog[1:]
 	}
 	a.sessionMu.Unlock()
-	a.writeLogFile(s)
 }
 
 func (a *app) sessionLogText() string {
@@ -72,14 +82,52 @@ func (a *app) sessionLogText() string {
 	return strings.Join(a.sessionLog, "")
 }
 
-// logFileDir is the current download folder; it falls back to the app data
-// folder when no download folder is configured or it cannot be created.
+// logFileDir is the run-log folder inside the current download folder; it
+// falls back to the app data folder when that folder cannot be created.
 func (a *app) logFileDir() string {
 	dir, _ := a.logDir.Load().(string)
-	if dir = strings.TrimSpace(dir); dir != "" && os.MkdirAll(dir, 0755) == nil {
-		return dir
+	if dir = strings.TrimSpace(dir); dir != "" {
+		dir = filepath.Join(dir, runLogDirName)
+		if os.MkdirAll(dir, 0755) == nil {
+			return dir
+		}
 	}
 	return a.appDir
+}
+
+// beginRunLog starts a new log file for one press of 開始下載 and clears the
+// in-memory copy, so 複製 Log and the file both hold only this run.
+func (a *app) beginRunLog(started time.Time) {
+	dir := a.logFileDir()
+	base := runLogPrefix + started.Format("20060102_150405")
+	path := filepath.Join(dir, base+".txt")
+	for n := 2; n < 100; n++ {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		}
+		path = filepath.Join(dir, fmt.Sprintf("%s_%d.txt", base, n))
+	}
+	a.sessionMu.Lock()
+	a.sessionLog, a.sessionBytes = nil, 0
+	a.sessionMu.Unlock()
+	a.logFileMu.Lock()
+	a.runLogPath, a.lastRunLog = path, path
+	a.logFileMu.Unlock()
+}
+
+// endRunLog is called after the run's final line; later messages go to the
+// app log until the next run starts.
+func (a *app) endRunLog() {
+	a.logFileMu.Lock()
+	a.runLogPath = ""
+	a.logFileMu.Unlock()
+}
+
+// latestRunLog is the file of the running or most recent run ("" if none yet).
+func (a *app) latestRunLog() string {
+	a.logFileMu.Lock()
+	defer a.logFileMu.Unlock()
+	return a.lastRunLog
 }
 
 // setLogDir is called from the UI thread whenever the download folder is
@@ -104,11 +152,17 @@ func (a *app) writeLogFile(s string) {
 	}
 	a.logFileMu.Lock()
 	defer a.logFileMu.Unlock()
-	path := filepath.Join(a.logFileDir(), logFileName)
-	if st, err := os.Stat(path); err == nil && st.Size() > maxLogFileBytes {
-		// Keep the old log under a dated name instead of discarding it.
-		archived := filepath.Join(filepath.Dir(path), "AIXAI_下載紀錄_"+time.Now().Format("20060102_150405")+".txt")
-		_ = os.Rename(path, archived)
+	path := a.runLogPath
+	if path == "" {
+		if a.appDir == "" {
+			return // no data folder (unit tests): never write into the working directory
+		}
+		path = filepath.Join(a.appDir, appLogFileName)
+		if st, err := os.Stat(path); err == nil && st.Size() > maxLogFileBytes {
+			// Keep the old log under a dated name instead of discarding it.
+			archived := filepath.Join(a.appDir, "AIXAI_程式紀錄_"+time.Now().Format("20060102_150405")+".txt")
+			_ = os.Rename(path, archived)
+		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -202,6 +256,5 @@ func (a *app) copyLogToClipboard() {
 		messageBox(a.hwnd, "複製 Log", err.Error(), MB_OK|MB_ICONWARNING)
 		return
 	}
-	path := filepath.Join(a.logFileDir(), logFileName)
-	a.postStatus(fmt.Sprintf("狀態：已複製 %d 行 Log 到剪貼簿（完整紀錄檔：%s）", strings.Count(text, "\n"), path))
+	a.postStatus(fmt.Sprintf("狀態：已複製 %d 行 Log 到剪貼簿（本次紀錄檔：%s）", strings.Count(text, "\n"), a.latestRunLog()))
 }

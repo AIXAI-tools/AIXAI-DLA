@@ -85,7 +85,7 @@ func (b *cdpBrowser) forceToFront() {
 func (a *app) showLoginWindow() string {
 	b := a.loginBrowser.Load()
 	if b == nil || !b.alive() {
-		return "目前沒有等待中的登入視窗。"
+		return "目前沒有等待操作的瀏覽器視窗。"
 	}
 	b.reveal(a.scale)
 	return ""

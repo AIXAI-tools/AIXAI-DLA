@@ -164,7 +164,7 @@ func (a *app) repairTruncatedDownload(ctx context.Context, cfg settings) error {
 	}
 	for _, chunk := range truncationRetryChunks {
 		if a.stopRequested.Load() || ctx.Err() != nil {
-			return nil
+			return errStopped
 		}
 		a.postLog("→ 改用分段下載重新取得完整檔案（每段 " + chunk + "）…\r\n")
 		a.postStatus("狀態：偵測到檔案不完整，正在分段重新下載…")
@@ -173,7 +173,7 @@ func (a *app) repairTruncatedDownload(ctx context.Context, cfg settings) error {
 			return err
 		}
 		if a.stopRequested.Load() {
-			return nil
+			return errStopped
 		}
 		if len(truncatedMP4Files(a.lastYtFiles)) == 0 {
 			a.postLog("✓ 分段下載完成，檔案已完整。\r\n")

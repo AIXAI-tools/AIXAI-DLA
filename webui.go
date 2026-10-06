@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 	"unsafe"
 
 	webview2 "github.com/jchv/go-webview2"
@@ -170,48 +169,13 @@ func (a *app) drainStatus() {
 // appendLog is used by UI-thread code; it goes through the same queue.
 func (a *app) appendLog(s string) { a.postLog(s) }
 
-type doneEvent struct {
-	Kind     string   `json:"kind"`
-	OK       bool     `json:"ok"`
-	Stopped  bool     `json:"stopped"`
-	Partial  bool     `json:"partial"`
-	Message  string   `json:"message"`
-	Failures []string `json:"failures,omitempty"`
-	Output   string   `json:"output"`
-}
-
-func (a *app) postDone(d doneInfo) {
-	if a.closing.Load() {
+func (a *app) emitTask(index int, state, message string) {
+	if a.job == nil {
 		return
 	}
-	a.busy.Store(false)
-	ev := doneEvent{Kind: d.Kind, Stopped: d.Stopped, Output: a.cfg.OutputFolder}
-	switch {
-	case d.Stopped:
-		ev.Message = "已停止。未完成的檔案會保留，之後可用同一網址繼續。"
-		a.postLog("=== 任務已停止 ===\r\n")
-	case d.Err != nil:
-		var partial *batchPartialError
-		if errors.As(d.Err, &partial) {
-			ev.Partial = true
-			ev.Failures = partial.Failures
-			ev.Message = fmt.Sprintf("連續下載完成，%d 項失敗；成功的項目已保留。", len(partial.Failures))
-			a.postLog("=== 連續下載完成（部分項目失敗）===\r\n" + d.Err.Error() + "\r\n")
-		} else {
-			ev.Message = d.Err.Error()
-			a.postLog("錯誤：" + d.Err.Error() + "\r\n")
-		}
-	default:
-		ev.OK = true
-		ev.Message = "全部任務完成。"
-		a.postLog("=== 全部任務完成 ===\r\n")
-		a.resumePath = ""
-	}
-	a.emit("done", ev)
-}
-
-func (a *app) emitTask(index int, state, message string) {
-	a.emit("task", map[string]interface{}{"index": index, "state": state, "message": message})
+	index += a.itemOffset
+	a.setJobItem(index, state, message)
+	a.emit("task", map[string]interface{}{"job": a.job.ID, "index": index, "state": state, "message": message})
 }
 
 func (a *app) saveSettings() {
@@ -275,11 +239,10 @@ func (a *app) runWebUI() error {
 // subclassWindow intercepts WM_CLOSE to confirm before abandoning a running task.
 func (a *app) subclassWindow() {
 	cb := syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
-		if uint32(msg) == wmClose && a.busy.Load() {
-			if messageBox(hwnd, "任務仍在執行", "目前任務尚未結束。確定要停止並關閉嗎？", MB_YESNO|MB_ICONQUESTION) != IDYES {
+		if uint32(msg) == wmClose && a.anyJobRunning() {
+			if messageBox(hwnd, "任務仍在執行", "還有任務正在下載。關閉後這些任務會暫停，下次開啟程式可以按「繼續」接著下載。\n\n確定要關閉嗎？", MB_YESNO|MB_ICONQUESTION) != IDYES {
 				return 0
 			}
-			a.stopCurrent()
 		}
 		r, _, _ := procCallWindowProcW.Call(a.ui.origProc, hwnd, msg, wp, lp)
 		return r
@@ -328,6 +291,8 @@ type uiInit struct {
 	Repo     string     `json:"repo"`
 	Email    string     `json:"email"`
 	LogFile  string     `json:"logFile"`
+	Jobs     []jobView  `json:"jobs"`
+	MaxLimit int        `json:"maxLimit"`
 }
 
 type startRequest struct {
@@ -346,12 +311,14 @@ type startRequest struct {
 	CookieFile     string `json:"cookieFile"`
 	CaptureBrowser string `json:"captureBrowser"`
 	AdvancedOpen   bool   `json:"advancedOpen"`
+	MaxJobs        int    `json:"maxJobs"`
 }
 
 type startResponse struct {
 	Error string   `json:"error,omitempty"`
 	Field string   `json:"field,omitempty"`
 	URLs  []string `json:"urls,omitempty"`
+	JobID int      `json:"jobId,omitempty"`
 }
 
 func (a *app) bindUI() {
@@ -386,11 +353,13 @@ func (a *app) bindUI() {
 			presets = append(presets, uiOption{Value: p.Args, Label: label, Hint: hint})
 		}
 		a.initializeLocalState()
-		return uiInit{Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
-			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, LogFile: filepath.Join(a.logFileDir(), logFileName)}
+		a.loadJobsOnce.Do(a.loadJobs)
+		return uiInit{Jobs: a.jobViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
+			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, LogFile: filepath.Join(a.cfg.OutputFolder, runLogDirName)}
 	})
 	_ = w.Bind("goStart", a.startFromUI)
-	_ = w.Bind("goStop", func() { a.stopCurrent() })
+	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
+	_ = w.Bind("goClearFinished", func() { a.clearFinishedJobs() })
 	_ = w.Bind("goSaveSettings", func(req startRequest) {
 		a.applyRequestToSettings(req)
 		a.saveSettings()
@@ -399,9 +368,9 @@ func (a *app) bindUI() {
 	_ = w.Bind("goPickCookieFile", func() string { return a.pickCookieFile() })
 	_ = w.Bind("goPickResumeFile", func(current string) string { return a.pickResumeFile(current) })
 	_ = w.Bind("goOpenFolder", func(path string) string { return a.openFolder(path) })
-	_ = w.Bind("goOpenLogFile", func() string {
-		path := filepath.Join(a.logFileDir(), logFileName)
-		if !validFile(path, 1) {
+	_ = w.Bind("goOpenLogFile", func(id int) string {
+		path := a.jobLogFile(id)
+		if path == "" || !validFile(path, 1) {
 			return "目前還沒有紀錄檔（開始下載後就會建立）。"
 		}
 		openInBrowser(path)
@@ -468,15 +437,18 @@ func (a *app) applyRequestToSettings(req startRequest) {
 	}
 	a.cfg.UnsafeMode = !req.Safe
 	a.cfg.AdvancedOpen = req.AdvancedOpen
+	if req.MaxJobs > 0 {
+		a.cfg.MaxJobs = clampMaxJobs(req.MaxJobs)
+		if int(a.maxJobs.Swap(int32(a.cfg.MaxJobs))) != a.cfg.MaxJobs {
+			go a.schedule() // a higher limit may start waiting tasks
+		}
+	}
 	a.setLogDir(a.cfg.OutputFolder)
 }
 
 // startFromUI validates the request (returning field-level messages for the
 // page to show inline) and starts the download task.
 func (a *app) startFromUI(req startRequest) startResponse {
-	if a.busy.Load() {
-		return startResponse{Error: "目前有任務正在執行。"}
-	}
 	var urls []string
 	var notes []string
 	for _, line := range strings.Split(strings.ReplaceAll(req.URLs, "\r\n", "\n"), "\n") {
@@ -545,27 +517,7 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		}
 	}
 
-	a.busy.Store(true)
-	a.stopRequested.Store(false)
-	a.postLog("\r\n=== 開始處理 " + time.Now().Format("2006-01-02 15:04:05") + " ===\r\n")
-	for _, n := range notes {
-		a.postLog(n)
-	}
-	a.logTaskHeader(urls, req.Mode, formatID, a.cfg)
-	a.postStatus("正在準備下載元件…")
-
-	cfg := a.cfg
-	mode := req.Mode
-	ctx := a.beginTask()
-	a.workerWG.Add(1)
-	go func() {
-		defer a.workerWG.Done()
-		defer a.endTask()
-		err := a.ensureEnvironment(ctx, false)
-		if err == nil {
-			err = a.runURLs(ctx, urls, mode, formatID, output, cfg)
-		}
-		a.postDone(doneInfo{Kind: "download", Err: err, Stopped: a.stopRequested.Load()})
-	}()
-	return startResponse{URLs: urls}
+	j := a.addJob(urls, req.Mode, formatID, output, a.cfg, notes)
+	a.resumePath = ""
+	return startResponse{URLs: urls, JobID: j.ID}
 }

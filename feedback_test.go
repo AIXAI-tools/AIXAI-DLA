@@ -11,7 +11,7 @@ import (
 
 func TestFeedbackReportPrivacy(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	a := &app{statusQueue: make(chan string, 16)}
+	a := &app{appShared: &appShared{statusQueue: make(chan string, 16)}}
 	a.cfg = settings{Mode: 0, CookieBrowser: "auto", CookieFile: home + `\secret\cookies.txt`, ExtraArgs: "--add-header Cookie:sessionid=LEAKME"}
 	a.recordLog("✓ 已儲存：" + home + `\Videos\a.mp4` + "\r\n")
 	a.recordLog("[debug] Authorization: Bearer TOPSECRET\r\n")

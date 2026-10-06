@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net/url"
 	"os"
 	"os/exec"
@@ -46,6 +47,50 @@ type browserMediaCandidate struct {
 	// replaced by a larger rendition from that data.
 	PageJSON  [][]byte
 	PlayedURL string
+	// EpisodeMatch: the stream's path carries the episode number of the page.
+	EpisodeMatch bool
+}
+
+// pageEpisodeNumber is the episode a page address asks for: a trailing number
+// (/title/7), episode-7, or ?ep=7. 0 when the address has none.
+func pageEpisodeNumber(raw string) int {
+	if ep := episodeFromQuery(raw); ep > 0 {
+		return ep
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return 0
+	}
+	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	if len(parts) == 0 {
+		return 0
+	}
+	last := strings.ToLower(parts[len(parts)-1])
+	if m := captureEpisodeRE.FindStringSubmatch(last); len(m) > 1 {
+		last = m[1]
+	}
+	if allDigits(last) && len(last) <= 4 {
+		n, _ := strconv.Atoi(last)
+		return n
+	}
+	return 0
+}
+
+// streamHasEpisode reports whether a stream path has the episode number as a
+// segment of its own (…/7/stream.m3u8). Players often preload the next
+// episodes, so on an episode page the matching stream is the one to keep.
+func streamHasEpisode(raw string, ep int) bool {
+	u, err := url.Parse(raw)
+	if err != nil || ep <= 0 {
+		return false
+	}
+	want := strconv.Itoa(ep)
+	for _, s := range strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' }) {
+		if strings.TrimLeft(s, "0") == want {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -94,6 +139,46 @@ func captureContentLength(headers map[string]string) int64 {
 	return n
 }
 
+// isAdMediaURL recognises video-ad requests by the address alone (ad servers,
+// VAST tags, pre-roll clips). Ads served from ordinary hosts are caught from
+// the page's VAST responses and ad <video> elements instead (cdp_session.go).
+func isAdMediaURL(raw string) bool {
+	lower := strings.ToLower(raw)
+	for _, needle := range []string{"doubleclick", "googleads", "googlesyndication", "imasdk", "/ads/", "vast", "preroll", "pre-roll", "adserver"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+var vastMediaFileRE = regexp.MustCompile(`(?is)<MediaFile\b[^>]*>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</MediaFile>`)
+
+// vastMediaFiles returns the ad video addresses listed in a VAST response
+// (the standard format for video ads). Anything else returns nil.
+func vastMediaFiles(body string) []string {
+	if !strings.Contains(body, "<VAST") && !strings.Contains(body, "<vast") {
+		return nil
+	}
+	var out []string
+	for _, m := range vastMediaFileRE.FindAllStringSubmatch(body, 64) {
+		if u := strings.TrimSpace(html.UnescapeString(m[1])); strings.HasPrefix(u, "http") {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// adURLKey compares ad addresses without their query string, since tracking
+// parameters often differ between the VAST entry and the actual request.
+func adURLKey(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	return strings.ToLower(u.Host) + u.Path
+}
+
 func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 	raw := strings.TrimSpace(ev.URL)
 	if raw == "" {
@@ -113,7 +198,7 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 			return browserMediaCandidate{}, false
 		}
 	}
-	if strings.Contains(lower, "doubleclick") || strings.Contains(lower, "googleads") || strings.Contains(lower, "/ads/") {
+	if isAdMediaURL(raw) {
 		return browserMediaCandidate{}, false
 	}
 	// Some sign-in pages play a decorative static clip from a static-asset host;
@@ -171,6 +256,9 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 func betterCaptureCandidate(newC, oldC browserMediaCandidate) bool {
 	if oldC.URL == "" {
 		return true
+	}
+	if newC.EpisodeMatch != oldC.EpisodeMatch {
+		return newC.EpisodeMatch
 	}
 	if newC.Score != oldC.Score {
 		return newC.Score > oldC.Score
@@ -316,6 +404,8 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 			}
 		}
 		return nil
+	} else if errors.Is(err, errStopped) {
+		return err
 	} else if candidate.PlayedURL != "" && ctx.Err() == nil {
 		// The larger rendition could not be downloaded: fall back to the stream
 		// the page actually played, exactly as before.

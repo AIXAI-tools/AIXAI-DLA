@@ -10,6 +10,7 @@ cookies*.txt
 settings.json
 capture-*-profile/
 AIXAI_下載紀錄*.txt
+AIXAI_程式紀錄*.txt
 
 # Editors / OS
 .vscode/

@@ -223,6 +223,28 @@ func cdpAutoplayScript() string {
 })();`
 }
 
+// cdpAdVideoScript lists, as a JSON array, what the page's ad <video> elements
+// play: a video counts as an ad when it or one of its parents has "ad", "ads",
+// "vast", "ima", "preroll" or "advert" as a word of its id or class.
+const cdpAdVideoScript = `(() => {
+  const re = /(^|[^a-z])(ad|ads|vast|ima|preroll|advert|advertisement)([^a-z]|$)/i;
+  const out = [];
+  try {
+    document.querySelectorAll('video').forEach(v => {
+      let el = v, ad = false;
+      for (let i = 0; i < 6 && el; i++, el = el.parentElement) {
+        const cls = typeof el.className === 'string' ? el.className : '';
+        if (re.test((el.id || '') + ' ' + cls)) { ad = true; break; }
+      }
+      if (!ad) return;
+      if (v.currentSrc && /^https?:/.test(v.currentSrc)) out.push(v.currentSrc);
+      if (v.src && /^https?:/.test(v.src)) out.push(v.src);
+      v.querySelectorAll('source').forEach(s => { if (s.src && /^https?:/.test(s.src)) out.push(s.src); });
+    });
+  } catch (_) {}
+  return JSON.stringify(out);
+})()`
+
 // isTikTokDramaAPI reports whether a captured request is one of the TikTok web
 // API calls whose JSON body carries the episode's playAddr once logged in.
 func isTikTokDramaAPI(raw string) bool {

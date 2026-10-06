@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.7"
+	appVersion = "4.0.8"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -315,6 +315,8 @@ type settings struct {
 	// DisclaimerAccepted is the version of the terms the user agreed to; the
 	// UI asks again whenever the terms change.
 	DisclaimerAccepted string `json:"disclaimer_accepted"`
+	// MaxJobs is how many download tasks may run at the same time.
+	MaxJobs int `json:"max_jobs"`
 }
 
 type doneInfo struct {
@@ -445,7 +447,11 @@ var cookieBrowserOptions = []cookieBrowserOption{
 	{Label: "Vivaldi（需可讀取該瀏覽器 Cookie）", Value: "vivaldi"},
 }
 
-type app struct {
+// appShared is what every download task shares: the window, the tools, the
+// log display queue and the capture browser. Each task runs on its own *app
+// (see jobs.go) that embeds the same *appShared, so stop flags, the running
+// process, the log file and the per-run state below stay separate per task.
+type appShared struct {
 	// ui is the WebView2 front end (see webui.go).
 	ui *webUI
 
@@ -463,7 +469,6 @@ type app struct {
 	ffmpegPath        string
 	ffprobePath       string
 	denoPath          string
-	resumePath        string
 
 	statusQueue chan string
 	doneQueue   chan doneInfo
@@ -475,28 +480,71 @@ type app struct {
 	logPendingBytes int
 	logDropped      int
 
-	// Chronological copy of this session's log, used by the 複製 Log button and
-	// mirrored (with secrets redacted) to a text log file in the output folder.
+	// capBrowser is the capture browser shared by all tasks; captureSem lets
+	// one task use it at a time (a capture may wait for the user).
+	capBrowser *cdpBrowser
+	captureSem chan struct{}
+	// envSem serialises tool checks/updates between tasks.
+	envSem chan struct{}
+	// captureRunning is true while a capture browser may be alive (checked at
+	// shutdown).
+	captureRunning atomic.Bool
+	// loginBrowser is the capture browser while it waits for the user to sign
+	// in or act (used by the 顯示登入視窗 button).
+	loginBrowser atomic.Pointer[cdpBrowser]
+	// capturePref is the capture browser chosen in 進階設定 (string; "" or
+	// "default" = the system default browser). See capture_browser.go.
+	capturePref atomic.Value
+
+	// Coalesce UI wake-up messages so heavy command output cannot flood
+	// the Win32 message queue and make the window appear unresponsive.
+	logWakePending    atomic.Bool
+	statusWakePending atomic.Bool
+
+	closing      atomic.Bool
+	shutdownOnce sync.Once
+	resourceOnce sync.Once
+	workerWG     sync.WaitGroup
+
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+
+	// Download tasks (jobs.go). main is the window's own *app; maxJobs is
+	// settings.MaxJobs for the scheduler.
+	main         *app
+	maxJobs      atomic.Int32
+	jobsMu       sync.Mutex
+	jobs         []*job
+	loadJobsOnce sync.Once
+	nextJobID    int
+}
+
+type app struct {
+	*appShared
+
+	// job is the task this *app runs; nil for the window's own instance.
+	job *job
+	// itemOffset maps runURLs' item numbers to the task's full item list.
+	itemOffset int
+
+	resumePath string
+
+	// Chronological copy of this run's log, used by the 複製 Log button and
+	// mirrored (with secrets redacted) to the run's log file.
 	sessionMu    sync.Mutex
 	sessionLog   []string
 	sessionBytes int
 	logFileMu    sync.Mutex
-	logDir       atomic.Value
+	runLogPath   string // file of the running task; guarded by logFileMu
+	lastRunLog   string // file of the running or most recent task
+	// runPos is the index of the item the running task is on.
+	runPos atomic.Int32
+	logDir atomic.Value
 
-	// capBrowser is the capture browser shared by all URLs of one download task.
-	capBrowser *cdpBrowser
-	// captureRunning is true while a capture browser may be alive (checked at
-	// shutdown); captureStartFailed stops a batch when it cannot be started.
-	captureRunning     atomic.Bool
+	// captureStartFailed stops a batch when the capture browser cannot be
+	// started; loginCancelled stops it when the user closes the login window.
 	captureStartFailed atomic.Bool
-	// loginBrowser is the capture browser while it waits for the user to sign
-	// in (used by the 顯示登入視窗 button); loginCancelled stops the batch when
-	// the user closes that window.
-	loginBrowser   atomic.Pointer[cdpBrowser]
-	loginCancelled atomic.Bool
-	// capturePref is the capture browser chosen in 進階設定 (string; "" or
-	// "default" = the system default browser). See capture_browser.go.
-	capturePref atomic.Value
+	loginCancelled     atomic.Bool
 
 	// lastYtArgs / lastYtFiles describe the most recent yt-dlp run (only used
 	// by the worker goroutine) so a truncated result can be fetched again.
@@ -505,20 +553,9 @@ type app struct {
 	// lastCaptureFile is the file saved by the latest browser-capture download.
 	lastCaptureFile string
 
-	// Coalesce UI wake-up messages so heavy command output cannot flood
-	// the Win32 message queue and make the window appear unresponsive.
-	logWakePending    atomic.Bool
-	statusWakePending atomic.Bool
-
 	busy          atomic.Bool
 	stopRequested atomic.Bool
-	closing       atomic.Bool
-	shutdownOnce  sync.Once
-	resourceOnce  sync.Once
-	workerWG      sync.WaitGroup
 
-	rootCtx    context.Context
-	rootCancel context.CancelFunc
 	taskMu     sync.Mutex
 	taskCancel context.CancelFunc
 
@@ -656,24 +693,29 @@ func newApp(hInst uintptr) (*app, error) {
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	a := &app{
-		hInstance:         hInst,
-		dpi:               96,
-		scale:             1,
-		appDir:            appDir,
-		binDir:            binDir,
-		configPath:        filepath.Join(appDir, "settings.json"),
-		ytDlpPath:         filepath.Join(binDir, "yt-dlp.exe"),
-		luxPath:           filepath.Join(binDir, "lux.exe"),
-		tiktokCrawlerPath: filepath.Join(binDir, "tiktok_crawler.exe"),
-		ffmpegPath:        filepath.Join(binDir, "ffmpeg.exe"),
-		ffprobePath:       filepath.Join(binDir, "ffprobe.exe"),
-		denoPath:          filepath.Join(binDir, "deno.exe"),
-		statusQueue:       make(chan string, 128),
-		doneQueue:         make(chan doneInfo, 8),
-		rootCtx:           rootCtx,
-		rootCancel:        rootCancel,
-		cfg:               settings{OutputFolder: defaultOut, Mode: 0, NoPlaylist: true, PlaylistFolder: true, SequenceStart: 1, SequenceEnd: 50},
+		appShared: &appShared{
+			hInstance:         hInst,
+			dpi:               96,
+			scale:             1,
+			appDir:            appDir,
+			binDir:            binDir,
+			configPath:        filepath.Join(appDir, "settings.json"),
+			ytDlpPath:         filepath.Join(binDir, "yt-dlp.exe"),
+			luxPath:           filepath.Join(binDir, "lux.exe"),
+			tiktokCrawlerPath: filepath.Join(binDir, "tiktok_crawler.exe"),
+			ffmpegPath:        filepath.Join(binDir, "ffmpeg.exe"),
+			ffprobePath:       filepath.Join(binDir, "ffprobe.exe"),
+			denoPath:          filepath.Join(binDir, "deno.exe"),
+			statusQueue:       make(chan string, 128),
+			doneQueue:         make(chan doneInfo, 8),
+			captureSem:        make(chan struct{}, 1),
+			envSem:            make(chan struct{}, 1),
+			rootCtx:           rootCtx,
+			rootCancel:        rootCancel,
+		},
+		cfg: settings{OutputFolder: defaultOut, Mode: 0, NoPlaylist: true, PlaylistFolder: true, SequenceStart: 1, SequenceEnd: 50, MaxJobs: 2},
 	}
+	a.main = a
 	a.loadSettings()
 	if a.cfg.OutputFolder == "" {
 		a.cfg.OutputFolder = defaultOut
@@ -866,7 +908,19 @@ func verifyDigest(path, digest string) error {
 	return nil
 }
 
+// ensureEnvironment checks (and if needed downloads or updates) the tools.
+// Tasks running in parallel take turns, so no two of them write the same tool.
 func (a *app) ensureEnvironment(ctx context.Context, checkYtUpdate bool) error {
+	select {
+	case a.envSem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-a.envSem }()
+	return a.ensureEnvironmentLocked(ctx, checkYtUpdate)
+}
+
+func (a *app) ensureEnvironmentLocked(ctx context.Context, checkYtUpdate bool) error {
 	if err := os.MkdirAll(a.binDir, 0755); err != nil {
 		return err
 	}
@@ -974,18 +1028,21 @@ func (a *app) ensureEnvironment(ctx context.Context, checkYtUpdate bool) error {
 func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, output string, cfg settings) error {
 	batchFailures := make([]string, 0)
 	safe := !cfg.UnsafeMode
-	// All URLs of this task share one capture browser; close it when done.
-	defer a.closeCaptureBrowser()
+	// The capture browser is shared by all tasks and closed by the scheduler
+	// when the last running task ends (jobs.go).
 	a.captureStartFailed.Store(false)
 	a.loginCancelled.Store(false)
 	pacer := newSafePacer()
 	episodes := newEpisodeBatch()
+	envRefreshed := false
+	unsupportedHosts := map[string]bool{}
 	if safe {
 		a.postLog(safeModeIntro(urls, cfg))
 	} else {
 		a.postLog("⚠ 帳號安全模式已關閉：不加間隔、失敗會自動重試。大量下載需要登入的網站時，帳號可能被限制或封鎖。\r\n")
 	}
 	for i, rawURL := range urls {
+		a.runPos.Store(int32(i)) // finished items are not redone by 繼續下載
 		if a.stopRequested.Load() {
 			return nil
 		}
@@ -1053,11 +1110,21 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			return fmt.Errorf("第 %d 個任務失敗：%w", i+1, err)
 		}
 
-		args, err := a.buildArgs(rawURL, mode, formatID, output, cfg)
-		if err != nil {
-			return err
+		// yt-dlp already reported this site unsupported earlier in the run
+		// (after the environment check): asking again for every episode only
+		// costs time and log lines, so go straight to the fallback chain.
+		host := urlHostKey(rawURL)
+		var err error
+		if site == "" && unsupportedHosts[host] {
+			a.postLog("ℹ 本批前面已確認 yt-dlp 不支援此網站，直接使用備援流程。\r\n")
+			err = errors.New("ERROR: Unsupported URL（本批已確認）")
+		} else {
+			args, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
+			if buildErr != nil {
+				return buildErr
+			}
+			err = a.runCommand(ctx, args)
 		}
-		err = a.runCommand(ctx, args)
 		if err != nil && safe && isBlockSignal(err) && !a.stopRequested.Load() {
 			return blockStopError(err)
 		}
@@ -1068,14 +1135,25 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// extractor errors. The original task is rebuilt and retried exactly once
 		// after the environment refresh; only if that still fails do we enter
 		// authentication or site-specific compatibility recovery below.
-		if err != nil && !a.stopRequested.Load() {
-			a.postLog("⚠ 偵測到下載錯誤，正在自動執行「檢查／更新環境」後重試原任務。\r\n")
-			a.postStatus("狀態：下載失敗，正在自動檢查／更新環境…")
-			refreshErr := a.ensureEnvironment(ctx, true)
-			if refreshErr != nil {
-				a.postLog("⚠ 自動檢查／更新環境未完整完成，將先以現有元件重試一次：" + refreshErr.Error() + "\r\n")
+		// The environment is checked at most once per run.
+		if err != nil && !a.stopRequested.Load() && !(site == "" && unsupportedHosts[host]) {
+			if !envRefreshed && a.otherJobsRunning() {
+				// Another task may be running the tools right now; replacing
+				// them mid-run would break it, so only retry here.
+				envRefreshed = true
+				a.postLog("⚠ 下載錯誤；其他任務正在執行，先不更新元件，直接重試一次。\r\n")
+			} else if !envRefreshed {
+				envRefreshed = true
+				a.postLog("⚠ 偵測到下載錯誤，正在自動執行「檢查／更新環境」後重試原任務。\r\n")
+				a.postStatus("狀態：下載失敗，正在自動檢查／更新環境…")
+				refreshErr := a.ensureEnvironment(ctx, true)
+				if refreshErr != nil {
+					a.postLog("⚠ 自動檢查／更新環境未完整完成，將先以現有元件重試一次：" + refreshErr.Error() + "\r\n")
+				} else {
+					a.postLog("✓ 自動檢查／更新環境完成，正在重新執行原任務。\r\n")
+				}
 			} else {
-				a.postLog("✓ 自動檢查／更新環境完成，正在重新執行原任務。\r\n")
+				a.postLog("⚠ 下載錯誤，本批已檢查過環境，直接重試一次。\r\n")
 			}
 
 			retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
@@ -1089,7 +1167,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				err = nil
 			} else {
 				err = retryErr
-				a.postLog("⚠ 更新／檢查環境後重試仍失敗，正在進一步判斷登入驗證或網站相容性。\r\n")
+				a.postLog("⚠ 重試仍失敗，正在進一步判斷登入驗證或網站相容性。\r\n")
 			}
 		}
 
@@ -1138,7 +1216,14 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// Unsupported URL after the normal update/retry flow, automatically
 		// switch to AIXAI's fallback chain instead of failing immediately.
 		if err != nil && !a.stopRequested.Load() && isUnsupportedURL(err) {
-			a.postLog("⚠ yt-dlp 回報 Unsupported URL，啟動 AIXAI 多引擎備援流程。\r\n")
+			if site == "" && host != "" && unsupportedHosts[host] {
+				// Already explained for an earlier item of this run.
+			} else {
+				if site == "" && host != "" {
+					unsupportedHosts[host] = true
+				}
+				a.postLog("⚠ yt-dlp 回報 Unsupported URL，啟動 AIXAI 多引擎備援流程。\r\n")
+			}
 			a.postStatus("狀態：yt-dlp 不支援此網址，正在嘗試備援解析…")
 			fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
 			if fallbackErr == nil {
@@ -1218,6 +1303,18 @@ func isCookieAccessFailure(err error) bool {
 	}
 	return false
 }
+
+func urlHostKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+}
+
+// errStopped is returned by a download step that ended because 停止 was
+// pressed, so no caller mistakes the interrupted step for a finished one.
+var errStopped = errors.New("已停止")
 
 func isUnsupportedURL(err error) bool {
 	if err == nil {
@@ -1874,7 +1971,7 @@ func (a *app) runTikTokCrawlerFallback(ctx context.Context, rawURL string, mode 
 		}
 		for _, browser := range browsers {
 			if a.stopRequested.Load() {
-				return nil
+				return errStopped
 			}
 			if retryErr := runOnce(browser); retryErr == nil {
 				a.postLog("✓ TikTok Crawler 使用 " + browserDisplayName(browser) + " 登入狀態重試成功。\r\n")
@@ -2001,6 +2098,57 @@ func looksLikeMediaProvider(raw string) bool {
 	return false
 }
 
+// looksLikeProviderVideo accepts a media-site link only when it points at one
+// video or player. Pages often link their own channel or profile on the same
+// sites (footer, share buttons); handing one of those to yt-dlp downloads
+// that whole channel instead of the episode on the page.
+func looksLikeProviderVideo(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+	p := strings.ToLower(u.Path)
+	segs := strings.FieldsFunc(p, func(r rune) bool { return r == '/' })
+	is := func(domain string) bool { return h == domain || strings.HasSuffix(h, "."+domain) }
+	has := func(prefixes ...string) bool {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(p, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case is("youtu.be"), is("dai.ly"):
+		return len(segs) == 1
+	case is("youtube.com"), is("youtube-nocookie.com"):
+		return (p == "/watch" && u.Query().Get("v") != "") || has("/embed/", "/shorts/", "/live/", "/v/")
+	case is("vimeo.com"):
+		for _, s := range segs {
+			if allDigits(s) {
+				return true
+			}
+		}
+		return false
+	case is("dailymotion.com"):
+		return has("/video/", "/embed/video/") || u.Query().Get("video") != ""
+	case is("tiktok.com"):
+		return strings.Contains(p, "/video/") || has("/embed/", "/player/")
+	case is("bilibili.com"):
+		return h == "player.bilibili.com" || has("/video/", "/bangumi/play/")
+	case is("facebook.com"):
+		return strings.Contains(p, "/videos/") || has("/watch", "/reel/", "/plugins/video.php", "/share/v/", "/share/r/")
+	case is("instagram.com"):
+		return has("/p/", "/reel/", "/reels/", "/tv/")
+	case is("streamable.com"):
+		return has("/e/") || len(segs) == 1
+	case is("loom.com"):
+		return has("/share/", "/embed/")
+	}
+	return false
+}
+
 func looksLikeDirectMedia(raw string) bool {
 	lower := strings.ToLower(raw)
 	return strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") || strings.Contains(lower, ".m4v") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mpd")
@@ -2012,8 +2160,16 @@ func extractWebMediaCandidates(body, baseURL string) []webMediaCandidate {
 	seen := map[string]bool{}
 	out := []webMediaCandidate{}
 	add := func(value, kind string) {
+		// Player JSON also holds plain words under the same keys (e.g. a
+		// "source":"mp4" type field); those are not addresses.
+		if kind == "json" && !strings.Contains(value, "/") && !looksLikeDirectMedia(value) {
+			return
+		}
 		resolved := resolveCandidateURL(baseURL, value)
 		if resolved == "" {
+			return
+		}
+		if looksLikeMediaProvider(resolved) && !looksLikeProviderVideo(resolved) {
 			return
 		}
 		key := candidateKey(resolved)
@@ -2062,7 +2218,9 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer string, mo
 	if err != nil {
 		return err
 	}
-	extras := []string{"--referer", referer, "--impersonate", "chrome"}
+	// A candidate stands for the one video on the page: never let it expand
+	// into a playlist or channel.
+	extras := []string{"--no-playlist", "--playlist-items", "1", "--referer", referer, "--impersonate", "chrome"}
 	if base, err := url.Parse(referer); err == nil && base.Scheme != "" && base.Host != "" {
 		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
 	}
@@ -2075,6 +2233,16 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 	body, finalURL, err := fetchHTMLPage(ctx, rawURL, cfg, "")
 	if err != nil {
 		return fmt.Errorf("讀取網頁失敗：%w", err)
+	}
+	if found, err := a.downloadPageEpisode(ctx, rawURL, finalURL, body, mode, formatID, output, cfg); found {
+		if err == nil {
+			a.postLog("✓ 已從頁面播放資料下載本集。\r\n")
+			return nil
+		}
+		if a.stopRequested.Load() {
+			return errStopped
+		}
+		a.postLog("⚠ 頁面播放資料中的串流下載失敗，改用其他方式：" + firstLine(err.Error()) + "\r\n")
 	}
 	candidates := extractWebMediaCandidates(body, finalURL)
 	if len(candidates) == 0 {
@@ -2089,7 +2257,7 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 	for i := 0; i < limit; i++ {
 		c := candidates[i]
 		if a.stopRequested.Load() {
-			return nil
+			return errStopped
 		}
 		a.postLog(fmt.Sprintf("→ 候選 %d/%d [%s]：%s\r\n", i+1, limit, c.Kind, c.URL))
 		if err := a.tryWebCandidate(ctx, c.URL, finalURL, mode, formatID, output, cfg); err == nil {
@@ -2140,6 +2308,9 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 				return nil
 			} else {
 				lastErr = err
+				if a.stopRequested.Load() {
+					return errStopped
+				}
 				a.postLog("⚠ 內建解析未成功，改以瀏覽器實際播放擷取：" + firstLine(err.Error()) + "\r\n")
 			}
 			a.postLog("→ 啟動瀏覽器播放擷取；直接觀察頁面實際載入的 HLS／MP4。\r\n")
@@ -2147,6 +2318,9 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 				return nil
 			} else {
 				lastErr = err
+				if a.stopRequested.Load() {
+					return errStopped
+				}
 				if !cfg.UnsafeMode {
 					// Extra engines would re-request the same login-bound episode
 					// several more times without the login; that only adds risk.
@@ -2160,6 +2334,9 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			return nil
 		} else {
 			lastErr = err
+			if a.stopRequested.Load() {
+				return errStopped
+			}
 			a.postLog("⚠ TikTok Crawler 未成功，最後再嘗試 Lux：" + firstLine(err.Error()) + "\r\n")
 		}
 	}
@@ -2172,12 +2349,18 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			return nil
 		} else {
 			lastErr = err
+			if a.stopRequested.Load() {
+				return errStopped
+			}
 			a.postLog("⚠ 內建解析未成功，改用瀏覽器播放擷取：" + firstLine(err.Error()) + "\r\n")
 		}
 		if err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
 			return nil
 		} else {
 			lastErr = err
+			if a.stopRequested.Load() {
+				return errStopped
+			}
 			a.postLog("⚠ 瀏覽器網路嗅探未成功，再嘗試其他備援引擎：" + firstLine(err.Error()) + "\r\n")
 		}
 	}
@@ -2188,12 +2371,18 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			return nil
 		} else {
 			lastErr = err
+			if a.stopRequested.Load() {
+				return errStopped
+			}
 			a.postLog("⚠ 靜態網頁解析未找到串流，改用瀏覽器網路嗅探：" + firstLine(err.Error()) + "\r\n")
 		}
 		if err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
 			return nil
 		} else {
 			lastErr = err
+			if a.stopRequested.Load() {
+				return errStopped
+			}
 			a.postLog("⚠ 瀏覽器網路嗅探未成功，繼續嘗試 Lux：" + firstLine(err.Error()) + "\r\n")
 		}
 	}
@@ -2938,7 +3127,7 @@ func (a *app) retryWithAuthentication(ctx context.Context, rawURL string, mode i
 	lastErr := originalErr
 	for _, browser := range browsers {
 		if a.stopRequested.Load() {
-			return nil
+			return errStopped
 		}
 		retryCfg := cfg
 		retryCfg.CookieFile = ""
@@ -2967,6 +3156,9 @@ func (a *app) tryBrowserAuth(ctx context.Context, rawURL string, mode int, forma
 	if err == nil {
 		a.postLog("✓ 使用 " + name + " 登入狀態重試成功。\r\n")
 		return nil
+	}
+	if errors.Is(err, errStopped) {
+		return err
 	}
 	if isCookieAccessFailure(err) {
 		a.postLog("⚠ " + name + " Cookie 無法讀取；若瀏覽器正在執行請先完全關閉，或改用 Firefox／cookies.txt。\r\n")
@@ -3391,7 +3583,7 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	a.cmdMu.Unlock()
 
 	if a.stopRequested.Load() {
-		return nil
+		return errStopped
 	}
 	if err != nil {
 		a.lastYtArgs, a.lastYtFiles = nil, nil
@@ -3530,6 +3722,12 @@ func (a *app) postLog(s string) {
 		return
 	}
 	a.recordLog(s)
+	if a.job != nil {
+		// The display mixes every task: tag each line with its task, and keep
+		// the tagged copy for the window-wide 複製 Log / feedback as well.
+		s = tagLines(s, fmt.Sprintf("[任務%d] ", a.job.ID))
+		a.main.recordSession(s)
+	}
 	a.logMu.Lock()
 	a.logPending = append(a.logPending, s)
 	a.logPendingBytes += len(s)
@@ -3570,7 +3768,24 @@ func (a *app) queueLatestStatus(s string) {
 }
 
 func (a *app) postStatus(s string) {
+	if a.job != nil {
+		a.setJobStatus(strings.TrimPrefix(s, "狀態："))
+		return
+	}
 	a.queueLatestStatus(s)
+}
+
+// tagLines puts tag in front of every non-empty line of s.
+func tagLines(s, tag string) string {
+	lines := strings.SplitAfter(s, "\n")
+	var b strings.Builder
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			b.WriteString(tag)
+		}
+		b.WriteString(l)
+	}
+	return b.String()
 }
 
 func (a *app) postEnv(s string) {
@@ -3610,6 +3825,8 @@ func (a *app) cancelCurrentTask() {
 
 func (a *app) beginShutdown() {
 	a.shutdownOnce.Do(func() {
+		// Running tasks are saved as paused so they can be continued next time.
+		a.pauseAllForShutdown()
 		a.closing.Store(true)
 		a.stopRequested.Store(true)
 		a.cancelCurrentTask()
@@ -3617,6 +3834,7 @@ func (a *app) beginShutdown() {
 			a.rootCancel()
 		}
 		a.killCurrentProcessTree(3 * time.Second)
+		a.stopAllWorkers()
 
 		workersDone := make(chan struct{})
 		go func() {
@@ -3664,6 +3882,8 @@ func (a *app) loadSettings() {
 	if strings.TrimSpace(a.cfg.CaptureBrowser) == "" {
 		a.cfg.CaptureBrowser = "default"
 	}
+	a.cfg.MaxJobs = clampMaxJobs(a.cfg.MaxJobs)
+	a.maxJobs.Store(int32(a.cfg.MaxJobs))
 	a.capturePref.Store(a.cfg.CaptureBrowser)
 }
 

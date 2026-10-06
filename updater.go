@@ -248,8 +248,8 @@ func (a *app) installReleaseAsync(tag string) {
 		a.updateStep("error", 0, err.Error())
 		a.postLog("⚠ 更新失敗：" + err.Error() + "\r\n")
 	}
-	if a.busy.Load() {
-		fail(errors.New("請先等目前的下載任務完成或停止，再更新版本"))
+	if a.anyJobRunning() {
+		fail(errors.New("請先等目前的下載任務完成或暫停，再更新版本"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.rootCtx, 15*time.Minute)

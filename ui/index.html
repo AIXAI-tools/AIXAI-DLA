@@ -178,6 +178,27 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .spin{width:14px;height:14px;border:2px solid var(--accent-soft);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{color:var(--muted);text-align:center;padding:22px 10px;font-size:13.5px}
+.jobs{list-style:none;margin:0;padding:0;max-height:440px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.job{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);padding:10px 12px}
+.job.running{border-color:var(--accent)}
+.job-h{display:flex;align-items:center;gap:8px}
+.job-h .t{font-weight:700;font-size:13.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job-h .n{font:600 12px var(--mono);color:var(--muted);white-space:nowrap}
+.badge{font-size:11.5px;padding:1px 8px;border-radius:999px;background:var(--surface-3);color:var(--muted);white-space:nowrap}
+.badge.running{background:var(--accent-soft);color:var(--accent)}
+.badge.done{background:var(--ok-soft);color:var(--ok)}
+.badge.failed,.badge.aborted{background:var(--danger-soft);color:var(--danger)}
+.badge.paused,.badge.partial{background:var(--warn-soft);color:var(--warn)}
+.job-s{font-size:12.5px;color:var(--muted);margin:6px 0 0;white-space:pre-wrap;word-break:break-word;max-height:4.2em;overflow:hidden}
+.job.failed .job-s{color:var(--danger)}
+.job .bar{margin:8px 0 6px}
+.job-f{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.job-f details{flex:1 1 100%;order:9}
+.job-f summary{cursor:pointer;font-size:12.5px;color:var(--muted)}
+.job .tasks{max-height:180px;margin-top:6px}
+.jobtag{font:600 11px var(--mono);color:var(--accent);margin-right:6px}
+.limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted)}
+.limit input{width:58px;height:30px;padding:0 6px}
 .banner{display:none;margin-top:12px;padding:10px 12px;border-radius:var(--radius-sm);font-size:13.5px;white-space:pre-wrap;word-break:break-word}
 .banner.show{display:block}
 .banner.ok{background:var(--ok-soft);color:var(--ok)}
@@ -357,10 +378,14 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
     <!-- ================= right: progress + log ================= -->
     <div class="right-col">
       <section class="card">
-        <div class="card-h"><h2><span class="seal"></span>任務</h2></div>
+        <div class="card-h"><h2><span class="seal"></span>任務</h2>
+          <div class="limit" title="最多同時下載幾個任務；同一網站的任務一律排隊，不會同時下載">
+            <label for="maxJobs">同時執行</label><input type="number" id="maxJobs" min="1" max="8"><span>個</span>
+            <button class="btn ghost sm" id="btnClearDone" title="移除已完成、已中止的任務">清除已完成</button>
+          </div>
+        </div>
         <div class="card-b">
-          <div class="overall"><div class="bar"><i id="overallBar"></i></div><span class="count" id="count">0 / 0</span></div>
-          <ul class="tasks" id="tasks"><li class="empty" id="emptyTasks">尚無任務。貼上網址後按「開始下載」。</li></ul>
+          <ul class="jobs" id="jobs"><li class="empty">尚無任務。貼上網址後按「開始下載」；下載中也可以繼續加入新任務。</li></ul>
           <div class="banner" id="banner"></div>
         </div>
       </section>
@@ -470,7 +495,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const state = { init:null, busy:false, urls:[], tasks:[], running:-1, kind:"bug", images:[], releases:null, saveTimer:0 };
+const state = { init:null, jobs:{}, openJobs:new Set(), kind:"bug", images:[], releases:null, saveTimer:0 };
 
 /* ---------------- theme ---------------- */
 const themeOrder = ["system","light","dark"];
@@ -509,7 +534,8 @@ function collect(){
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
-    extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open
+    extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open,
+    maxJobs:+$("maxJobs").value||0
   };
 }
 function saveSoon(){ clearTimeout(state.saveTimer); state.saveTimer=setTimeout(()=>window.goSaveSettings&&goSaveSettings(collect()),400); }
@@ -523,7 +549,7 @@ function refreshDependent(){
   $("advSum").textContent = parts.length ? "· "+parts.join("　") : "";
   $("seqBox").style.opacity = $("sequence").checked ? 1 : .75;
 }
-["mode","login","capBrowser","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId"].forEach(id=>{
+["mode","login","capBrowser","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId","maxJobs"].forEach(id=>{
   $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
   $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
 });
@@ -554,6 +580,8 @@ function fillForm(init){
   if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
   $("capBrowser").value=s.capture_browser||"default"; if($("capBrowser").selectedIndex<0) $("capBrowser").value="default";
   $("adv").open=!!s.advanced_open;
+  $("maxJobs").max=init.maxLimit||8; $("maxJobs").value=s.max_jobs||2;
+  setJobs(init.jobs||[]);
   $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
     + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
     + `<br>按下後會在瀏覽器開啟已填好的回報頁，並開啟截圖所在資料夾，把圖片拖進去即可。`;
@@ -561,42 +589,65 @@ function fillForm(init){
   refreshDependent();
 }
 
-/* ---------------- start / stop ---------------- */
-async function startOrStop(){
-  if(state.busy){ goStop(); $("goLabel").textContent="停止中…"; return; }
+/* ---------------- add task ---------------- */
+async function addTask(){
   fieldError(null);
   const res = await goStart(collect());
   if(res.error){ fieldError(res.field, res.error); if(!res.field) showBanner("err", res.error); return; }
-  state.urls=res.urls; state.tasks=res.urls.map(u=>({url:u,state:"pending",msg:"",pct:null})); state.running=-1;
-  hideBanner(); renderTasks(); setBusy(true);
+  hideBanner(); toast(`已加入任務 ${res.jobId}（${res.urls.length} 項）`);
 }
-$("btnGo").onclick=startOrStop;
-document.addEventListener("keydown",e=>{ if(e.ctrlKey && e.key==="Enter"){ e.preventDefault(); startOrStop(); } });
-
-function setBusy(b){
-  state.busy=b;
-  const go=$("btnGo");
-  go.classList.toggle("primary",!b); go.classList.toggle("danger",b);
-  $("goLabel").textContent = b ? "停止" : "開始下載";
-  go.querySelector("svg").innerHTML = b ? '<rect x="6" y="6" width="12" height="12" rx="2"/>' : '<path d="M12 4v12"/><path d="m6 11 6 6 6-6"/><path d="M5 20h14"/>';
-  ["urls","mode","output","btnBrowse","sequence","seqStart","seqEnd","safe","login","capBrowser","extra","noPlaylist","playlistFolder","btnCookie","btnResume","formatId","btnUpdate"].forEach(id=>$(id).disabled=b);
-}
+$("btnGo").onclick=addTask;
+document.addEventListener("keydown",e=>{ if(e.ctrlKey && e.key==="Enter"){ e.preventDefault(); addTask(); } });
 
 /* ---------------- tasks ---------------- */
-function renderTasks(){
-  const ul=$("tasks");
-  if(!state.tasks.length){ ul.innerHTML='<li class="empty">尚無任務。貼上網址後按「開始下載」。</li>'; $("count").textContent="0 / 0"; $("overallBar").style.width="0"; return; }
-  const icon={pending:"○",running:'<span class="spin"></span>',done:"✓",failed:"✕"};
-  ul.innerHTML=state.tasks.map((t,i)=>`<li class="task ${t.state}" id="task-${i}">
-    <span class="ic">${icon[t.state]}</span>
-    <div style="min-width:0"><div class="u" title="${esc(t.url)}">${i+1}. ${esc(t.url)}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.msg)}</div>`:""}</div>
-    <span class="p">${t.state==="running" && t.pct!=null ? t.pct.toFixed(0)+"%" : ""}</span></li>`).join("");
-  const done=state.tasks.filter(t=>t.state==="done").length, failed=state.tasks.filter(t=>t.state==="failed").length;
-  $("count").textContent=`${done} / ${state.tasks.length}`+(failed?`（${failed} 失敗）`:"");
-  const run=state.running>=0 && state.tasks[state.running] && state.tasks[state.running].pct ? state.tasks[state.running].pct/100 : 0;
-  $("overallBar").style.width=((done+failed+run)/state.tasks.length*100)+"%";
-  const cur=$("task-"+state.running); if(cur) cur.scrollIntoView({block:"nearest"});
+const JOB_LABEL={queued:"排隊中",running:"下載中",paused:"已暫停",done:"已完成",partial:"部分失敗",failed:"失敗",aborted:"已中止"};
+const JOB_BTNS={
+  queued:[["pause","暫停"],["abort","中止"]],
+  running:[["pause","暫停"],["abort","中止"]],
+  paused:[["resume","繼續"],["abort","中止"],["remove","移除"]],
+  failed:[["resume","繼續"],["abort","中止"],["remove","移除"]],
+  partial:[["remove","移除"]], done:[["remove","移除"]], aborted:[["remove","移除"]]
+};
+function mergeJob(v){
+  const old=state.jobs[v.id];
+  if(old) v.items.forEach((t,i)=>{ if(t.state==="running" && old.items[i] && old.items[i].pct!=null) t.pct=old.items[i].pct; });
+  state.jobs[v.id]=v;
 }
+function setJobs(list){ const keep={}; list.forEach(v=>{ mergeJob(v); keep[v.id]=true; }); Object.keys(state.jobs).forEach(id=>{ if(!keep[id]) delete state.jobs[id]; }); renderJobs(); }
+function renderJobs(){
+  const ul=$("jobs"); const list=Object.values(state.jobs).sort((a,b)=>a.id-b.id);
+  const running=list.filter(j=>j.state==="running").length, queued=list.filter(j=>j.state==="queued").length;
+  if(list.length) $("status").textContent = running||queued ? `執行中 ${running} 個任務${queued?`，排隊 ${queued} 個`:""}。` : "沒有執行中的任務。";
+  if(!list.length){ ul.innerHTML='<li class="empty">尚無任務。貼上網址後按「開始下載」；下載中也可以繼續加入新任務。</li>'; return; }
+  const icon={pending:"○",running:'<span class="spin"></span>',done:"✓",failed:"✕"};
+  ul.innerHTML=list.map(j=>{
+    const total=j.items.length, done=j.items.filter(t=>t.state==="done").length, failed=j.items.filter(t=>t.state==="failed").length;
+    const cur=j.items.find(t=>t.state==="running"); const part=cur&&cur.pct?cur.pct/100:0;
+    const line = j.state==="running" ? (j.status||"") : j.state==="queued" ? (j.waiting||"等待開始…") : (j.message||"");
+    const btns=(JOB_BTNS[j.state]||[]).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
+      + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`;
+    const items=j.items.map((t,i)=>`<li class="task ${t.state}"><span class="ic">${icon[t.state]||"○"}</span>
+      <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.msg)}</div>`:""}</div>
+      <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span></li>`).join("");
+    return `<li class="job ${j.state}">
+      <div class="job-h"><span class="t" title="${esc(j.title)}">${esc(j.title)}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
+      ${line?`<div class="job-s">${esc(line)}</div>`:""}
+      <div class="bar"><i style="width:${total?((done+failed+part)/total*100):0}%"></i></div>
+      <div class="job-f">${btns}<details data-id="${j.id}" ${state.openJobs.has(j.id)?"open":""}><summary>項目（${total}）</summary><ul class="tasks">${items}</ul></details></div>
+    </li>`;
+  }).join("");
+}
+let rjTimer=0; function renderJobsSoon(){ if(!rjTimer) rjTimer=setTimeout(()=>{rjTimer=0;renderJobs();},250); }
+$("jobs").addEventListener("toggle",e=>{ const d=e.target; if(d.tagName!=="DETAILS") return; const id=+d.dataset.id; if(d.open) state.openJobs.add(id); else state.openJobs.delete(id); },true);
+$("jobs").onclick=async e=>{
+  const b=e.target.closest("button[data-act]"); if(!b) return;
+  const id=+b.dataset.id, act=b.dataset.act, j=state.jobs[id];
+  if(act==="log"){ const err=await goOpenLogFile(id); if(err) toast(err); return; }
+  if(act==="folder"){ const err=await goOpenFolder(j?j.output:$("output").value); if(err) toast(err); return; }
+  if(act==="abort" && !confirm(`確定要中止任務 ${id}？已下載完成的檔案會保留，但這個任務不能再繼續。`)) return;
+  const err=await goJobAction(id,act); if(err) toast(err);
+};
+$("btnClearDone").onclick=()=>goClearFinished();
 function showBanner(kind,msg,acts){ const b=$("banner"); b.className="banner show "+kind; b.textContent=msg; if(acts){const d=document.createElement("div");d.className="acts";acts.forEach(a=>d.appendChild(a));b.appendChild(d);} }
 function hideBanner(){ $("banner").className="banner"; }
 function mkBtn(label,fn){ const b=document.createElement("button"); b.className="btn sm"; b.textContent=label; b.onclick=fn; return b; }
@@ -619,18 +670,25 @@ function appendLog(text){
   const box=$("log"); const atBottom=box.scrollHeight-box.scrollTop-box.clientHeight<40;
   const frag=document.createDocumentFragment();
   for(const raw of parts){
-    const line=raw.replace(/\r/g,""); if(!line.trim()) continue;
+    let line=raw.replace(/\r/g,""); if(!line.trim()) continue;
+    let jobId=0; const tag=line.match(/^\[任務(\d+)\] /);
+    if(tag){ jobId=+tag[1]; line=line.slice(tag[0].length); }
     const m=line.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
-    if(m && state.running>=0 && state.tasks[state.running]){ state.tasks[state.running].pct=parseFloat(m[1]); renderTasksSoon(); if(!line.includes("100%")) continue; }
-    const div=document.createElement("div"); const c=classify(line); if(c) div.className=c; div.textContent=line; frag.appendChild(div);
+    if(m){
+      const j=state.jobs[jobId]; const cur=j&&j.items.find(t=>t.state==="running");
+      if(cur){ cur.pct=parseFloat(m[1]); renderJobsSoon(); }
+      if(!line.includes("100%")) continue;
+    }
+    const div=document.createElement("div"); const c=classify(line); if(c) div.className=c;
+    if(jobId){ const t=document.createElement("span"); t.className="jobtag"; t.textContent="#"+jobId; div.appendChild(t); }
+    div.appendChild(document.createTextNode(line)); frag.appendChild(div);
   }
   box.appendChild(frag);
   while(box.childElementCount>LOG_MAX) box.firstElementChild.remove();
   if(atBottom) box.scrollTop=box.scrollHeight;
 }
-let rtTimer=0; function renderTasksSoon(){ if(!rtTimer) rtTimer=setTimeout(()=>{rtTimer=0;renderTasks();},250); }
 $("btnCopyLog").onclick=async()=>{ const e=await goCopyLog(); toast(e||"已複製完整紀錄（敏感資訊已遮蔽）"); };
-$("btnOpenLog").onclick=async()=>{ const e=await goOpenLogFile(); if(e) toast(e); };
+$("btnOpenLog").onclick=async()=>{ const e=await goOpenLogFile(0); if(e) toast(e); };
 $("btnClearLog").onclick=()=>{ $("log").innerHTML=""; toast("已清除畫面（紀錄檔不受影響）"); };
 
 /* ---------------- events from Go ---------------- */
@@ -639,27 +697,20 @@ window.aixai={ on(name,p){
     case "log": appendLog(p); break;
     case "status": $("status").textContent=p; break;
     case "env": $("env").textContent=p; break;
+    case "job": mergeJob(p); renderJobs(); break;
+    case "jobs": setJobs(p||[]); break;
+    case "jobRemoved": delete state.jobs[p.id]; renderJobs(); break;
+    case "jobStatus": { const j=state.jobs[p.id]; if(j){ j.status=p.status; renderJobsSoon(); } break; }
     case "task": {
-      const t=state.tasks[p.index]; if(!t) break;
+      const j=state.jobs[p.job]; const t=j&&j.items[p.index]; if(!t) break;
       t.state=p.state; if(p.message) t.msg=p.message;
-      if(p.state==="running"){ state.running=p.index; t.pct=null; }
-      renderTasks(); break; }
-    case "done": {
-      setBusy(false);
-      if(state.running>=0 && state.tasks[state.running] && state.tasks[state.running].state==="running"){
-        state.tasks[state.running].state = p.ok ? "done" : (p.stopped ? "pending" : "failed");
-        if(!p.ok && !p.stopped) state.tasks[state.running].msg = p.message.split("\n")[0];
-      }
-      state.running=-1; renderTasks();
-      const open=mkBtn("開啟下載資料夾",()=>goOpenFolder($("output").value));
-      if(p.ok){ showBanner("ok","✓ "+p.message,[open]); toast("全部任務完成"); }
-      else if(p.stopped){ showBanner("warn",p.message); }
-      else if(p.partial){ showBanner("warn",p.message+"\n"+(p.failures||[]).join("\n"),[open]); }
-      else { showBanner("err",p.message,[mkBtn("複製錯誤",()=>goCopyLog().then(e=>toast(e||"已複製紀錄"))),mkBtn("回報這個問題",()=>openFeedback(p.message))]); }
-      $("status").textContent = p.ok ? "全部任務完成。" : (p.stopped ? "已停止。" : "任務未完成。");
-      break; }
+      if(p.state==="running"){ t.pct=null; t.msg=""; }
+      renderJobsSoon(); break; }
     case "login":
-      if(p.waiting){
+      if(p.waiting && p.reason==="action"){
+        showBanner("warn","正片還沒開始播放：請在跳出的瀏覽器視窗操作（例如按播放、看完或關閉廣告）。\n開始播放後會自動繼續，最多等待 10 分鐘。",
+          [mkBtn("顯示瀏覽器視窗",()=>goShowLoginWindow().then(e=>{ if(e) toast(e); }))]);
+      } else if(p.waiting){
         showBanner("warn","需要登入：請在跳出的瀏覽器視窗完成登入。\n程式會一直等待，直到登入完成或按「停止」。",
           [mkBtn("顯示登入視窗",()=>goShowLoginWindow().then(e=>{ if(e) toast(e); }))]);
       } else { hideBanner(); }
