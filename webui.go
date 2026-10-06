@@ -323,6 +323,7 @@ type uiInit struct {
 	Settings settings   `json:"settings"`
 	Modes    []uiOption `json:"modes"`
 	Logins   []uiOption `json:"logins"`
+	Browsers []uiOption `json:"browsers"`
 	Presets  []uiOption `json:"presets"`
 	Repo     string     `json:"repo"`
 	Email    string     `json:"email"`
@@ -343,6 +344,7 @@ type startRequest struct {
 	ExtraArgs      string `json:"extraArgs"`
 	CookieBrowser  string `json:"cookieBrowser"`
 	CookieFile     string `json:"cookieFile"`
+	CaptureBrowser string `json:"captureBrowser"`
 	AdvancedOpen   bool   `json:"advancedOpen"`
 }
 
@@ -384,7 +386,7 @@ func (a *app) bindUI() {
 			presets = append(presets, uiOption{Value: p.Args, Label: label, Hint: hint})
 		}
 		a.initializeLocalState()
-		return uiInit{Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Presets: presets,
+		return uiInit{Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
 			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, LogFile: filepath.Join(a.logFileDir(), logFileName)}
 	})
 	_ = w.Bind("goStart", a.startFromUI)
@@ -452,6 +454,10 @@ func (a *app) applyRequestToSettings(req startRequest) {
 			a.cfg.CookieBrowser = req.CookieBrowser
 		}
 		a.cfg.CookieFile = ""
+	}
+	if b := strings.TrimSpace(req.CaptureBrowser); b != "" {
+		a.cfg.CaptureBrowser = b
+		a.capturePref.Store(b)
 	}
 	a.cfg.Sequence = req.Sequence
 	if req.SequenceStart > 0 {

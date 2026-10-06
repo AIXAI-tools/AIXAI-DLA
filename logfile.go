@@ -139,6 +139,14 @@ func (a *app) logTaskHeader(urls []string, mode int, formatID string, cfg settin
 	b.WriteString("儲存位置：" + cfg.OutputFolder + "\r\n")
 	b.WriteString("進階參數：" + strings.TrimSpace(cfg.ExtraArgs) + "\r\n")
 	b.WriteString("網站登入狀態：" + cfg.CookieBrowser + "\r\n")
+	capture := cfg.CaptureBrowser
+	if capture == "" || capture == "default" {
+		capture = "系統預設"
+		if _, name := systemDefaultBrowser(); name != "" {
+			capture += "（" + name + "）"
+		}
+	}
+	b.WriteString("擷取用瀏覽器：" + capture + "\r\n")
 	if strings.TrimSpace(cfg.CookieFile) != "" {
 		b.WriteString("Cookie 檔：已指定（內容不記錄）\r\n")
 	}

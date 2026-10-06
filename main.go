@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.3"
+	appVersion = "4.0.4"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -301,6 +301,9 @@ type settings struct {
 	ExtraArgs      string `json:"extra_args"`
 	CookieBrowser  string `json:"cookie_browser"`
 	CookieFile     string `json:"cookie_file"`
+	// CaptureBrowser is the background capture browser: "default" (the
+	// Windows default browser) or edge/chrome/brave/vivaldi.
+	CaptureBrowser string `json:"capture_browser"`
 	Sequence       bool   `json:"sequence"`
 	SequenceStart  int    `json:"sequence_start"`
 	SequenceEnd    int    `json:"sequence_end"`
@@ -491,6 +494,14 @@ type app struct {
 	// the user closes that window.
 	loginBrowser   atomic.Pointer[cdpBrowser]
 	loginCancelled atomic.Bool
+	// capturePref is the capture browser chosen in 進階設定 (string; "" or
+	// "default" = the system default browser). See capture_browser.go.
+	capturePref atomic.Value
+
+	// lastYtArgs / lastYtFiles describe the most recent yt-dlp run (only used
+	// by the worker goroutine) so a truncated result can be fetched again.
+	lastYtArgs  []string
+	lastYtFiles []string
 
 	// Coalesce UI wake-up messages so heavy command output cannot flood
 	// the Win32 message queue and make the window appear unresponsive.
@@ -982,12 +993,16 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		a.emitTask(i, "running", "")
 		a.postStatus(fmt.Sprintf("狀態：正在處理第 %d/%d 個網址…", i+1, len(urls)))
 		site := classifySiteURL(rawURL)
+		a.lastYtArgs, a.lastYtFiles = nil, nil
 
 		// These URL families are currently known to fall through yt-dlp's generic
 		// extractor. Route them directly to AIXAI's dedicated pipeline so a 50-episode
 		// batch does not waste time failing and checking for updates on every episode.
 		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" {
 			err := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
+			if err == nil && !a.stopRequested.Load() {
+				err = a.repairTruncatedDownload(ctx, cfg)
+			}
 			if a.stopRequested.Load() {
 				return nil
 			}
@@ -1112,6 +1127,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			} else {
 				err = fallbackErr
 			}
+		}
+		if err == nil && !a.stopRequested.Load() {
+			err = a.repairTruncatedDownload(ctx, cfg)
 		}
 		if err != nil {
 			if a.stopRequested.Load() {
@@ -3306,6 +3324,11 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 		waitCh <- err
 	}()
 
+	isYtDlp := engine == "yt-dlp"
+	a.lastYtArgs, a.lastYtFiles = nil, nil
+	if isYtDlp {
+		a.lastYtArgs = append([]string(nil), args...)
+	}
 	reader := bufio.NewReaderSize(pr, 64*1024)
 	var readErr error
 	var outputTail string
@@ -3313,6 +3336,11 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 		line, lineErr := reader.ReadString('\n')
 		if len(line) > 0 {
 			appendOutputTail(&outputTail, line, 96*1024)
+			if isYtDlp && strings.Contains(line, "[") {
+				for _, f := range downloadedFilesFromOutput(line) {
+					a.lastYtFiles = append(a.lastYtFiles, f)
+				}
+			}
 			displayLine := strings.ReplaceAll(strings.ReplaceAll(line, "\r\n", "\n"), "\n", "\r\n")
 			a.postLog(displayLine)
 		}
@@ -3338,6 +3366,7 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 		return nil
 	}
 	if err != nil {
+		a.lastYtArgs, a.lastYtFiles = nil, nil
 		return &commandRunError{Cause: err, Summary: summarizeCommandOutputForEngine(outputTail, err, engine)}
 	}
 	if readErr != nil {
@@ -3571,7 +3600,7 @@ func (a *app) beginShutdown() {
 		case <-time.After(3 * time.Second):
 		}
 		if a.captureRunning.Load() {
-			killCaptureProfileBrowsers(a.captureProfileDir())
+			a.killAllCaptureProfileBrowsers()
 		}
 
 		a.logMu.Lock()
@@ -3604,6 +3633,10 @@ func (a *app) loadSettings() {
 	if a.cfg.SequenceEnd <= 0 {
 		a.cfg.SequenceEnd = 50
 	}
+	if strings.TrimSpace(a.cfg.CaptureBrowser) == "" {
+		a.cfg.CaptureBrowser = "default"
+	}
+	a.capturePref.Store(a.cfg.CaptureBrowser)
 }
 
 func downloadFile(ctx context.Context, url, dest, label string, logFn func(string), statusFn func(string)) error {

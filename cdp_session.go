@@ -210,11 +210,12 @@ func (b *cdpBrowser) close() {
 // startCaptureBrowser launches the dedicated capture browser, attaches to its
 // tab and enables network monitoring before any page is opened.
 func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
-	browserName, browserPath, err := findCaptureBrowser()
+	info, browserPath, err := a.findCaptureBrowser()
 	if err != nil {
 		return nil, err
 	}
-	profileDir := a.captureProfileDir()
+	browserName := info.Name
+	profileDir := a.captureProfileDirFor(info.Key)
 	_ = os.MkdirAll(profileDir, 0755)
 	prepareCaptureProfile(profileDir)
 	args := []string{
@@ -360,7 +361,7 @@ func (a *app) captureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	b, err := a.startCaptureBrowser(ctx)
 	if errors.Is(err, errBrowserExitedEarly) && ctx.Err() == nil {
 		a.postLog("⚠ 擷取用的瀏覽器啟動後立即結束，正在清理背景程序後重試一次…\r\n")
-		killCaptureProfileBrowsers(a.captureProfileDir())
+		a.killAllCaptureProfileBrowsers()
 		time.Sleep(2500 * time.Millisecond)
 		b, err = a.startCaptureBrowser(ctx)
 	}
@@ -421,15 +422,15 @@ func (a *app) ensureTikTokLogin(ctx context.Context, b *cdpBrowser) error {
 	defer a.loginBrowser.Store(nil)
 	a.emit("login", map[string]interface{}{"waiting": true})
 	defer a.emit("login", map[string]interface{}{"waiting": false})
-	a.postLog("ℹ 這個頁面需要登入才能播放：已在 Edge 視窗開啟登入頁。請登入一次（建議使用專用帳號，不要用主帳號），偵測到登入後會自動繼續。\r\n")
+	a.postLog("ℹ 這個頁面需要登入才能播放：已在 " + b.name + " 視窗開啟登入頁。請登入一次（建議使用專用帳號，不要用主帳號），偵測到登入後會自動繼續。\r\n")
 	a.postLog("ℹ 程式會一直等待，直到登入完成或按「停止」；若找不到登入視窗，按任務區的「顯示登入視窗」。登入狀態會保存，之後不必再登入。\r\n")
 	start := time.Now()
 	for {
 		mins := int(time.Since(start).Minutes())
 		if mins == 0 {
-			a.postStatus("狀態：等待您在 Edge 視窗登入（不限時，可按「停止」取消）…")
+			a.postStatus("狀態：等待您在 " + b.name + " 視窗登入（不限時，可按「停止」取消）…")
 		} else {
-			a.postStatus(fmt.Sprintf("狀態：等待您在 Edge 視窗登入（已等待 %d 分鐘，不限時，可按「停止」取消）…", mins))
+			a.postStatus(fmt.Sprintf("狀態：等待您在 "+b.name+" 視窗登入（已等待 %d 分鐘，不限時，可按「停止」取消）…", mins))
 		}
 		select {
 		case <-ctx.Done():

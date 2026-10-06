@@ -320,6 +320,11 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
               </div>
             </div>
             <div class="field">
+              <label class="f" for="capBrowser">擷取用瀏覽器</label>
+              <select id="capBrowser"></select>
+              <div class="s" id="capBrowserHint" style="font-size:12.5px;color:var(--muted);margin-top:6px">一般下載用不到瀏覽器；只有無法直接下載的頁面，才會在背景用這個瀏覽器播放並擷取影片。</div>
+            </div>
+            <div class="field">
               <label class="f" for="extra">附加參數（yt-dlp，套用到所有下載）</label>
               <input type="text" id="extra" spellcheck="false" placeholder="可留白，例如 -x 只下載音訊">
               <div class="chips" id="chips"></div>
@@ -504,7 +509,7 @@ function collect(){
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
-    extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, advancedOpen:$("adv").open
+    extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open
   };
 }
 function saveSoon(){ clearTimeout(state.saveTimer); state.saveTimer=setTimeout(()=>window.goSaveSettings&&goSaveSettings(collect()),400); }
@@ -513,11 +518,12 @@ function refreshDependent(){
   $("cookieBox").classList.toggle("hidden", $("login").value !== "cookiefile");
   const parts=[];
   const lo=$("login"); if(lo.value!=="auto") parts.push(lo.options[lo.selectedIndex].text.replace("…",""));
+  const cb=$("capBrowser"); if(cb.value && cb.value!=="default" && cb.selectedIndex>=0) parts.push("擷取："+cb.options[cb.selectedIndex].text);
   if($("extra").value.trim()) parts.push("參數："+$("extra").value.trim());
   $("advSum").textContent = parts.length ? "· "+parts.join("　") : "";
   $("seqBox").style.opacity = $("sequence").checked ? 1 : .75;
 }
-["mode","login","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId"].forEach(id=>{
+["mode","login","capBrowser","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId"].forEach(id=>{
   $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
   $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
 });
@@ -532,6 +538,7 @@ function fillForm(init){
   $("appTitle").textContent=init.title; $("ver").textContent="v"+init.version; $("curVer").textContent="v"+init.version;
   document.title=init.title;
   $("mode").innerHTML=init.modes.map(m=>`<option value="${m.value}" title="${esc(m.hint||"")}">${esc(m.label)}</option>`).join("");
+  $("capBrowser").innerHTML=(init.browsers||[]).map(m=>`<option value="${m.value}" title="${esc(m.hint||"")}">${esc(m.label)}</option>`).join("");
   $("login").innerHTML=init.logins.map(m=>`<option value="${m.value}">${esc(m.label)}</option>`).join("");
   $("chips").innerHTML=init.presets.map((p,i)=>`<button class="chip" data-i="${i}" title="${esc(p.hint||"")}">${esc(p.label)}</button>`).join("");
   $("chips").onclick=e=>{
@@ -545,6 +552,7 @@ function fillForm(init){
   $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder;
   $("extra").value=s.extra_args||"";
   if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
+  $("capBrowser").value=s.capture_browser||"default"; if($("capBrowser").selectedIndex<0) $("capBrowser").value="default";
   $("adv").open=!!s.advanced_open;
   $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
     + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
@@ -571,7 +579,7 @@ function setBusy(b){
   go.classList.toggle("primary",!b); go.classList.toggle("danger",b);
   $("goLabel").textContent = b ? "停止" : "開始下載";
   go.querySelector("svg").innerHTML = b ? '<rect x="6" y="6" width="12" height="12" rx="2"/>' : '<path d="M12 4v12"/><path d="m6 11 6 6 6-6"/><path d="M5 20h14"/>';
-  ["urls","mode","output","btnBrowse","sequence","seqStart","seqEnd","safe","login","extra","noPlaylist","playlistFolder","btnCookie","btnResume","formatId","btnUpdate"].forEach(id=>$(id).disabled=b);
+  ["urls","mode","output","btnBrowse","sequence","seqStart","seqEnd","safe","login","capBrowser","extra","noPlaylist","playlistFolder","btnCookie","btnResume","formatId","btnUpdate"].forEach(id=>$(id).disabled=b);
 }
 
 /* ---------------- tasks ---------------- */
@@ -652,7 +660,7 @@ window.aixai={ on(name,p){
       break; }
     case "login":
       if(p.waiting){
-        showBanner("warn","需要登入：請在跳出的 Edge 視窗完成登入。\n程式會一直等待，直到登入完成或按「停止」。",
+        showBanner("warn","需要登入：請在跳出的瀏覽器視窗完成登入。\n程式會一直等待，直到登入完成或按「停止」。",
           [mkBtn("顯示登入視窗",()=>goShowLoginWindow().then(e=>{ if(e) toast(e); }))]);
       } else { hideBanner(); }
       break;

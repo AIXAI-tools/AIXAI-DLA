@@ -166,36 +166,6 @@ func betterCaptureCandidate(newC, oldC browserMediaCandidate) bool {
 	return newC.SeenAt.After(oldC.SeenAt)
 }
 
-func findCaptureBrowser() (string, string, error) {
-	pf := os.Getenv("ProgramFiles")
-	pf86 := os.Getenv("ProgramFiles(x86)")
-	local := os.Getenv("LOCALAPPDATA")
-	checks := []struct {
-		name string
-		path string
-	}{
-		{"Microsoft Edge", filepath.Join(pf86, "Microsoft", "Edge", "Application", "msedge.exe")},
-		{"Microsoft Edge", filepath.Join(pf, "Microsoft", "Edge", "Application", "msedge.exe")},
-		{"Microsoft Edge", filepath.Join(local, "Microsoft", "Edge", "Application", "msedge.exe")},
-		{"Brave", filepath.Join(pf, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")},
-		{"Brave", filepath.Join(pf86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")},
-		{"Brave", filepath.Join(local, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")},
-		{"Vivaldi", filepath.Join(local, "Vivaldi", "Application", "vivaldi.exe")},
-		{"Google Chrome", filepath.Join(pf, "Google", "Chrome", "Application", "chrome.exe")},
-		{"Google Chrome", filepath.Join(pf86, "Google", "Chrome", "Application", "chrome.exe")},
-		{"Google Chrome", filepath.Join(local, "Google", "Chrome", "Application", "chrome.exe")},
-	}
-	for _, item := range checks {
-		if item.path == "" {
-			continue
-		}
-		if st, err := os.Stat(item.path); err == nil && !st.IsDir() {
-			return item.name, item.path, nil
-		}
-	}
-	return "", "", errors.New("找不到 Microsoft Edge／Brave／Vivaldi／Chrome，無法啟動瀏覽器媒體嗅探")
-}
-
 func writeCaptureExtension(dir, endpoint string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -342,9 +312,17 @@ func killStandaloneProcessTree(cmd *exec.Cmd) {
 }
 
 func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (browserMediaCandidate, error) {
-	browserName, browserPath, err := findCaptureBrowser()
+	info, browserPath, err := a.findCaptureBrowser()
 	if err != nil {
 		return browserMediaCandidate{}, err
+	}
+	browserName := info.Name
+	// Google Chrome ignores --load-extension since version 137, and forcing it
+	// back on with a feature switch is a pattern antivirus heuristics treat as
+	// malware (Windows Defender flagged a test build for exactly this). Chrome
+	// therefore uses the DevTools path only.
+	if info.Key == "chrome" {
+		return browserMediaCandidate{}, errors.New("Google Chrome 不支援擴充模組備援；可在「進階設定 → 擷取用瀏覽器」改選 Microsoft Edge 再試")
 	}
 	token, err := randomCaptureToken()
 	if err != nil {
@@ -428,6 +406,9 @@ func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (bro
 	}()
 
 	profileDir := filepath.Join(a.appDir, "capture-browser-profile")
+	if info.Key != "edge" {
+		profileDir += "-" + info.Key
+	}
 	_ = os.MkdirAll(profileDir, 0755)
 	prepareCaptureProfile(profileDir)
 	args := []string{
@@ -447,12 +428,6 @@ func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (bro
 	if strings.Contains(strings.ToLower(browserName), "edge") {
 		args = append(args, "--disable-features=msEdgeFirstRunExperience", "--edge-skip-compat-layer-relaunch")
 	}
-	// Chrome 137+ disabled --load-extension in the branded build. Keep this
-	// compatibility flag for versions where Chromium still exposes the switch;
-	// Edge/Brave/Vivaldi remain the preferred capture browsers.
-	if strings.Contains(strings.ToLower(browserName), "chrome") {
-		args = append(args, "--disable-features=DisableLoadExtensionCommandLineSwitch")
-	}
 	startURL := fmt.Sprintf("http://127.0.0.1:%d%s", port, startPath)
 	args = append(args, startURL)
 	cmd := exec.Command(browserPath, args...)
@@ -460,6 +435,8 @@ func (a *app) captureMediaWithExtension(ctx context.Context, rawURL string) (bro
 	if err := cmd.Start(); err != nil {
 		return browserMediaCandidate{}, fmt.Errorf("啟動 %s 媒體嗅探視窗失敗：%w", browserName, err)
 	}
+	// Like the DevTools browser: end it together with this app, even on a crash.
+	bindToAppLifetime(cmd.Process.Pid)
 	defer killStandaloneProcessTree(cmd)
 
 	a.postLog("→ 啟動 " + browserName + " 擴充模組媒體嗅探（第二備援）；會先確認監聽器就緒，再自動導向影片頁。\r\n")

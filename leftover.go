@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -36,14 +35,9 @@ import (
 // Chromium handed the launch over to it.
 var errBrowserExitedEarly = errors.New("擷取用的瀏覽器啟動後立即結束（專用瀏覽器資料正被另一個背景程序使用）")
 
-// captureProfileDir is the dedicated capture-browser profile. AIXAI_CAPTURE_PROFILE
-// overrides it (testing/troubleshooting only, like AIXAI_UI_DEBUG).
-func (a *app) captureProfileDir() string {
-	if dir := strings.TrimSpace(os.Getenv("AIXAI_CAPTURE_PROFILE")); dir != "" {
-		return dir
-	}
-	return filepath.Join(a.appDir, "capture-cdp-profile")
-}
+// The dedicated capture-browser profiles (one per browser) are defined in
+// capture_browser.go. AIXAI_CAPTURE_PROFILE overrides them (testing/
+// troubleshooting only, like AIXAI_UI_DEBUG).
 
 // ---------------------------------------------------------------- job object
 
@@ -186,10 +180,20 @@ func killCaptureProfileBrowsers(profileDir string) int {
 	return n
 }
 
+// killAllCaptureProfileBrowsers runs killCaptureProfileBrowsers for the
+// profile of every supported capture browser.
+func (a *app) killAllCaptureProfileBrowsers() int {
+	n := 0
+	for _, dir := range a.allCaptureProfileDirs() {
+		n += killCaptureProfileBrowsers(dir)
+	}
+	return n
+}
+
 // cleanupLeftoverCaptureBrowsers stops capture browsers left behind by an
 // earlier run (e.g. by an older version) and logs it.
 func (a *app) cleanupLeftoverCaptureBrowsers() int {
-	n := killCaptureProfileBrowsers(a.captureProfileDir())
+	n := a.killAllCaptureProfileBrowsers()
 	if n > 0 {
 		a.postLog(fmt.Sprintf("✓ 已自動關閉上次殘留在背景的擷取瀏覽器（%d 個）。\r\n", n))
 		time.Sleep(1500 * time.Millisecond) // let Chromium release the profile lock
