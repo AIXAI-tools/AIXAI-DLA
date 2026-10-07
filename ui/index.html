@@ -408,6 +408,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
   <div class="dlg-h"><h3>版本更新／切換</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
   <div class="dlg-b">
     <p style="margin-top:0">目前使用 <b id="curVer"></b>。可更新到新版本，或退回先前的穩定版本；每個檔案都會先核對 SHA256 才替換。</p>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 啟動時自動檢查新版本（連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
     <div id="relState" class="note">正在讀取版本清單…</div>
     <div id="relList"></div>
     <div id="updProgress" class="hidden" style="margin-top:12px">
@@ -561,7 +562,7 @@ $("btnResume").onclick = async()=>{ const dir=await goPickResumeFile($("output")
 
 function fillForm(init){
   const s=init.settings;
-  $("appTitle").textContent=init.title; $("ver").textContent="v"+init.version; $("curVer").textContent="v"+init.version;
+  $("appTitle").textContent=init.title; $("ver").textContent="v"+init.version; $("curVer").textContent="v"+init.version; $("startupUpdCheck").checked=!init.settings.no_startup_update_check;
   document.title=init.title;
   $("mode").innerHTML=init.modes.map(m=>`<option value="${m.value}" title="${esc(m.hint||"")}">${esc(m.label)}</option>`).join("");
   $("capBrowser").innerHTML=(init.browsers||[]).map(m=>`<option value="${m.value}" title="${esc(m.hint||"")}">${esc(m.label)}</option>`).join("");
@@ -722,6 +723,7 @@ window.aixai={ on(name,p){
 
 /* ---------------- update dialog ---------------- */
 $("btnUpdate").onclick=()=>{ $("dlgUpdate").showModal(); $("relState").textContent="正在讀取版本清單…"; $("relState").classList.remove("hidden"); $("relList").innerHTML=""; $("btnInstall").disabled=true; goCheckUpdates(); };
+$("startupUpdCheck").onchange=()=>goSetStartupUpdateCheck($("startupUpdCheck").checked);
 $("btnRelPage").onclick=()=>goOpenURL((state.releases&&state.releases.releasesUrl)||"https://github.com/");
 function renderReleases(r){
   state.releases=r;
@@ -806,7 +808,7 @@ $("btnTerms").onclick=()=>openTerms(false);
   for(let i=0;i<50 && !window.goInit;i++) await new Promise(r=>setTimeout(r,20));
   const init=await goInit(); state.init=init; fillForm(init);
   if(init.settings.disclaimer_accepted !== TERMS_VERSION) openTerms(true); else $("urls").focus();
-  goCheckUpdates(); // quietly mark the 版本 button when a newer release exists
+  if(!init.settings.no_startup_update_check) goCheckUpdates(); // quietly mark the 版本 button when a newer release exists
 })();
 </script>
 </body>

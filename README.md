@@ -81,6 +81,14 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-H=windowsg
 
 見 [CHANGELOG.md](CHANGELOG.md)。
 
+## 隱私權
+
+本程式不收集任何使用者資料。會連線的對象與時機見 [PRIVACY.md](PRIVACY.md)。
+
+## 發佈檔的來源
+
+自 v4.0.12 起，Releases 中的執行檔由本 repository 的原始碼在 GitHub Actions（`.github/workflows/build.yml`）上自動編譯。
+
 ## 授權
 
 [MIT](LICENSE)

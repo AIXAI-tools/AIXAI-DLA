@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.11"
+	appVersion = "4.0.12"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -317,6 +317,9 @@ type settings struct {
 	DisclaimerAccepted string `json:"disclaimer_accepted"`
 	// MaxJobs is how many download tasks may run at the same time.
 	MaxJobs int `json:"max_jobs"`
+	// NoStartupUpdateCheck turns off the quiet update check at startup. Stored
+	// inverted so that settings files from older versions keep it enabled.
+	NoStartupUpdateCheck bool `json:"no_startup_update_check"`
 }
 
 type doneInfo struct {

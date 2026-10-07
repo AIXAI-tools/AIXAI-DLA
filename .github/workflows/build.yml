@@ -1,0 +1,57 @@
+# Builds the Windows executable on a GitHub-hosted runner so every release
+# binary can be traced back to a commit in this repository.
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GOOS: windows
+      GOARCH: amd64
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Vet and test
+        run: |
+          go vet .
+          go test -count=1 .
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path main.go -Pattern 'appVersion\s*=\s*"([^"]+)"'
+          $v = $m.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME does not match appVersion $v"
+          }
+          $name = "AIXAI_AllInOne_Downloader_v$($v.Replace('.', '_'))_Windows_x64.exe"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "exe=$name" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: go build -trimpath -ldflags="-H=windowsgui" -o "out/${{ steps.ver.outputs.exe }}" .
+
+      - name: SHA256
+        shell: pwsh
+        run: Get-FileHash "out/${{ steps.ver.outputs.exe }}" -Algorithm SHA256 | Format-List
+
+      - name: Upload executable
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          path: out/${{ steps.ver.outputs.exe }}
+          archive: false
