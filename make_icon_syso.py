@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Generate a minimal Windows amd64 .syso containing RT_ICON/RT_GROUP_ICON.
+"""Generate a minimal Windows amd64 .syso containing RT_ICON/RT_GROUP_ICON
+and, with --version, an RT_VERSION block (file/product version, company,
+description) shown in the exe's Properties > Details tab.
 No external Python packages are required. Input must be an .ico file.
 """
 from __future__ import annotations
@@ -9,6 +11,7 @@ from pathlib import Path
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
+RT_VERSION = 16
 LANG_EN_US = 0x0409
 MACHINE_AMD64 = 0x8664
 REL_AMD64_ADDR32NB = 0x0003
@@ -68,7 +71,39 @@ def make_group(entries, icon_ids):
     return bytes(out)
 
 
-def make_resource_section(ico_entries):
+def _pad4(b: bytearray):
+    while len(b) % 4:
+        b.append(0)
+
+
+def _ver_block(key: str, value: bytes = b'', text: bool = False, children=()) -> bytes:
+    """One VS_VERSIONINFO-style node: wLength, wValueLength, wType, key, value, children."""
+    b = bytearray(6)
+    b += (key + '\0').encode('utf-16-le')
+    _pad4(b)
+    b += value
+    for c in children:
+        _pad4(b)
+        b += c
+    struct.pack_into('<HHH', b, 0, len(b), len(value) // 2 if text else len(value), 1 if text else 0)
+    return bytes(b)
+
+
+def make_version_info(version: str, strings: dict) -> bytes:
+    nums = [int(x) for x in version.split('.')] + [0, 0, 0, 0]
+    ms = (nums[0] << 16) | nums[1]
+    ls = (nums[2] << 16) | nums[3]
+    fixed = struct.pack('<13I', 0xFEEF04BD, 0x00010000, ms, ls, ms, ls,
+                        0x3F, 0, 0x00040004, 1, 0, 0, 0)  # VOS_NT_WINDOWS32, VFT_APP
+    table = _ver_block('040904B0', text=True, children=[
+        _ver_block(k, (v + '\0').encode('utf-16-le'), text=True) for k, v in strings.items()])
+    sfi = _ver_block('StringFileInfo', text=True, children=[table])
+    vfi = _ver_block('VarFileInfo', text=True, children=[
+        _ver_block('Translation', struct.pack('<HH', LANG_EN_US, 1200))])
+    return _ver_block('VS_VERSION_INFO', fixed, children=[sfi, vfi])
+
+
+def make_resource_section(ico_entries, version_info: bytes | None = None):
     icon_ids=list(range(2,2+len(ico_entries)))
     icon_names=[]
     for rid,e in zip(icon_ids,ico_entries):
@@ -78,6 +113,8 @@ def make_resource_section(ico_entries):
         (RT_ICON,DirNode(icon_names)),
         (RT_GROUP_ICON,DirNode([(1,DirNode([(LANG_EN_US,Leaf(group))]))])),
     ])
+    if version_info:
+        root.entries.append((RT_VERSION,DirNode([(1,DirNode([(LANG_EN_US,Leaf(version_info))]))])))
 
     dirs=[]; leaves=[]; cursor=0
     def assign_dirs(node):
@@ -139,9 +176,23 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('ico')
     ap.add_argument('out')
+    ap.add_argument('--version', help='e.g. 4.0.11; adds an RT_VERSION resource')
     args=ap.parse_args()
     entries=parse_ico(Path(args.ico))
-    section,relocs=make_resource_section(entries)
+    vi=None
+    if args.version:
+        full='.'.join((args.version.split('.')+['0','0','0','0'])[:4])
+        vi=make_version_info(args.version, {
+            'CompanyName': 'AIXAI tools',
+            'FileDescription': 'AIXAI All-in-One Downloader',
+            'FileVersion': full,
+            'InternalName': 'AIXAI_AllInOne_Downloader',
+            'LegalCopyright': 'Copyright (c) 2026 AIXAI tools. MIT License.',
+            'OriginalFilename': 'AIXAI_AllInOne_Downloader_Windows_x64.exe',
+            'ProductName': 'AIXAI All-in-One Downloader',
+            'ProductVersion': args.version,
+        })
+    section,relocs=make_resource_section(entries, vi)
     write_syso(Path(args.out),section,relocs)
     print(f'embedded {len(entries)} icon layers; {len(section)} resource bytes; {len(relocs)} relocations')
 

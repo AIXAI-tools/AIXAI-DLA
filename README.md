@@ -66,12 +66,12 @@ Windows 一鍵影音下載工具：免安裝 Python，首次使用自動準備 y
 ```bash
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet .
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test .
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=windowsgui" -o AIXAI_AllInOne_Downloader_Windows_x64.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-H=windowsgui" -o AIXAI_AllInOne_Downloader_Windows_x64.exe .
 ```
 
 - 介面原始碼在 `ui/index.html`（以 `go:embed` 打包進 exe）；設定 `AIXAI_UI_DEBUG=1` 可開啟 WebView2 開發者工具。
 - 發佈版本請附上 `.exe`、完整版 `.zip` 與 `SHA256SUMS.txt`；程式內更新只安裝列在校驗檔中的執行檔。
-- 更換 `APP_ICON.ico` 後，以 `python make_icon_syso.py APP_ICON.ico rsrc_windows_amd64.syso` 重新產生圖示資源。
+- 更換 `APP_ICON.ico` 或修改 `main.go` 的 `appVersion` 後，以 `python make_icon_syso.py APP_ICON.ico rsrc_windows_amd64.syso --version <版本號>` 重新產生圖示與版本資訊資源。
 
 ## 第三方元件
 

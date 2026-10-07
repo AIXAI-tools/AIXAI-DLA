@@ -5,10 +5,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -198,5 +201,25 @@ func TestFetchReleasesKeepsLimitErrorWhenWebFails(t *testing.T) {
 	defer func() { updateAPIBase, updateWebBase = oldAPI, oldWeb }()
 	if _, err := fetchReleases(context.Background()); err == nil || !strings.Contains(err.Error(), "限制查詢次數") {
 		t.Fatalf("want the limit message, got %v", err)
+	}
+}
+
+func TestFileBlockedBySystem(t *testing.T) {
+	_, missing := os.Open(filepath.Join(t.TempDir(), "gone.exe.new"))
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{missing, true},
+		{&os.PathError{Op: "open", Path: "x", Err: syscall.Errno(225)}, true},
+		{&os.PathError{Op: "write", Path: "x", Err: syscall.Errno(226)}, true},
+		{&os.PathError{Op: "open", Path: "x", Err: syscall.Errno(5)}, false}, // access denied
+		{errors.New("HTTP 404"), false},
+	}
+	for i, c := range cases {
+		if got := fileBlockedBySystem(c.err); got != c.want {
+			t.Errorf("case %d (%v): got %v, want %v", i, c.err, got, c.want)
+		}
 	}
 }

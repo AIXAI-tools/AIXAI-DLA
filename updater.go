@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -303,12 +305,25 @@ func (a *app) installReleaseAsync(tag string) {
 		a.updateStep("download", p, fmt.Sprintf("正在下載 %s（%d%%）", tag, p))
 	}); err != nil {
 		_ = os.Remove(newPath)
+		if fileBlockedBySystem(err) {
+			fail(errBlockedUpdate())
+			return
+		}
 		fail(fmt.Errorf("下載失敗：%w", err))
 		return
 	}
 	a.updateStep("verify", 100, "正在核對 SHA256…")
 	got, err := fileSHA256(newPath)
-	if err != nil || !strings.EqualFold(got, want) {
+	if err != nil {
+		_ = os.Remove(newPath)
+		if fileBlockedBySystem(err) {
+			fail(errBlockedUpdate())
+			return
+		}
+		fail(fmt.Errorf("無法讀取下載的新版檔案，已取消更新：%w", err))
+		return
+	}
+	if !strings.EqualFold(got, want) {
 		_ = os.Remove(newPath)
 		fail(errors.New("SHA256 不符，檔案可能損毀或遭竄改，已取消更新"))
 		return
@@ -335,6 +350,24 @@ func (a *app) installReleaseAsync(tag string) {
 		return
 	}
 	a.ui.w.Dispatch(func() { procPostMessageW.Call(a.ui.hwnd, wmClose, 0, 0) })
+}
+
+// fileBlockedBySystem reports whether Windows removed or refused to open the
+// downloaded file before it could be verified (Windows error codes 225/226),
+// as opposed to a real checksum mismatch.
+func fileBlockedBySystem(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && (errno == 225 || errno == 226)
+}
+
+func errBlockedUpdate() error {
+	return fmt.Errorf("新版檔案下載後被 Windows 移除或封鎖，無法核對，已取消更新。可到發佈頁手動下載：%s", releasesPageURL())
 }
 
 func downloadWithProgress(ctx context.Context, url, dest string, size int64, progress func(int)) error {
