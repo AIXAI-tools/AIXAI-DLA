@@ -353,6 +353,17 @@ func capturedOutputBase(rawURL, title string) string {
 				series := parts[len(parts)-2]
 				return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", series, ep))
 			}
+			// e.g. /play/123/3: the number a sequence download replaces. Episode
+			// pages often share one title, so without the number every episode
+			// gets the same name and yt-dlp skips the rest as already downloaded.
+			if allDigits(last) && len(last) <= 4 {
+				ep, _ := strconv.Atoi(last)
+				name := safeWindowsBaseName(title)
+				if name == "" {
+					name = safeWindowsBaseName(parts[len(parts)-2])
+				}
+				return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", name, ep))
+			}
 		}
 	}
 	// One address for every episode (?ep=N): the page title is the same for
