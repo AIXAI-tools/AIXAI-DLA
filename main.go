@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.0.12"
+	appVersion = "4.1.0"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -555,6 +555,18 @@ type app struct {
 	lastYtFiles []string
 	// lastCaptureFile is the file saved by the latest browser-capture download.
 	lastCaptureFile string
+	// lastYtGeneric: the latest yt-dlp run used its generic (any web page)
+	// extractor, so its result is a guess and is checked strictly.
+	lastYtGeneric bool
+	// outputs are the media files written by the current download step, for
+	// the media check (media_check.go). seqHashes (sequence batches only)
+	// maps each checked file's SHA-256 to the item that saved it; curItem is
+	// the item being downloaded.
+	outputs   []string
+	seqHashes map[string]seqFile
+	curItem   int
+	// diag is the current item's trail of tried ways (diagnostics.go).
+	diag *itemDiag
 
 	busy          atomic.Bool
 	stopRequested atomic.Bool
@@ -1039,6 +1051,11 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	episodes := newEpisodeBatch()
 	envRefreshed := false
 	unsupportedHosts := map[string]bool{}
+	a.seqHashes = nil
+	if cfg.Sequence {
+		a.seqHashes = map[string]seqFile{}
+	}
+	defer func() { a.seqHashes, a.diag = nil, nil }()
 	if safe {
 		a.postLog(safeModeIntro(urls, cfg))
 	} else {
@@ -1057,6 +1074,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		a.postStatus(fmt.Sprintf("狀態：正在處理第 %d/%d 個網址…", i+1, len(urls)))
 		site := classifySiteURL(rawURL)
 		a.lastYtArgs, a.lastYtFiles = nil, nil
+		a.curItem = i
+		a.resetOutputs()
+		a.diagStartItem(i, len(urls), rawURL)
 
 		// These URL families are currently known to fall through yt-dlp's generic
 		// extractor. Route them directly to AIXAI's dedicated pipeline so a 50-episode
@@ -1068,12 +1088,21 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" || episodeByQuery {
 			var err error
 			if episodeByQuery {
+				// runEpisodeCapture compares the episodes itself and stops the
+				// batch on a repeat; the generic sequence comparison stays off.
+				seq := a.seqHashes
+				a.seqHashes = nil
+				a.diagBegin("瀏覽器擷取（同網址分集）")
 				err = a.runEpisodeCapture(ctx, episodes, rawURL, mode, formatID, output, cfg)
+				a.diagEnd(err)
+				a.seqHashes = seq
 				if err != nil && !a.stopRequested.Load() && isEpisodeRepeated(err) {
+					a.diagFinishItem(err)
 					a.emitTask(i, "failed", firstLine(err.Error()))
 					return &commandRunError{Cause: err, Summary: err.Error()}
 				}
 				if err != nil && !a.stopRequested.Load() && episodes.failures >= 2 {
+					a.diagFinishItem(err)
 					a.emitTask(i, "failed", firstLine(err.Error()))
 					return &commandRunError{Cause: err, Summary: "連續兩集無法在瀏覽器播放，已停止整批。\n\n常見原因：後面的集數需要登入或解鎖（本工具不會嘗試繞過），或這部作品沒有這麼多集。\n\n最後一次錯誤：" + firstLine(err.Error())}
 				}
@@ -1081,18 +1110,16 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				err = a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg)
 			}
 			if err == nil && !a.stopRequested.Load() {
-				err = a.repairTruncatedDownload(ctx, cfg)
+				err = a.finishStep(ctx, mode, cfg, true)
 			}
 			if a.stopRequested.Load() {
 				return nil
 			}
+			a.diagFinishItem(err)
 			if err == nil {
 				a.postLog("✓ 本項任務完成。\r\n")
 				a.emitTask(i, "done", "")
 				continue
-			}
-			if a.stopRequested.Load() {
-				return nil
 			}
 			if safe && isBlockSignal(err) {
 				return blockStopError(err)
@@ -1121,12 +1148,14 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		if site == "" && unsupportedHosts[host] {
 			a.postLog("ℹ 本批前面已確認 yt-dlp 不支援此網站，直接使用備援流程。\r\n")
 			err = errors.New("ERROR: Unsupported URL（本批已確認）")
+			a.diagRecord("yt-dlp（本批已確認不支援，略過）", err)
 		} else {
 			args, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
 			if buildErr != nil {
 				return buildErr
 			}
 			err = a.runCommand(ctx, args)
+			a.diagRecord("yt-dlp", err)
 		}
 		if err != nil && safe && isBlockSignal(err) && !a.stopRequested.Load() {
 			return blockStopError(err)
@@ -1165,6 +1194,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 			a.postStatus(fmt.Sprintf("狀態：環境檢查完成，正在重試第 %d/%d 個網址…", i+1, len(urls)))
 			retryErr := a.runCommand(ctx, retryArgs)
+			a.diagRecord("yt-dlp 重試（檢查環境後）", retryErr)
 			if retryErr == nil {
 				a.postLog("✓ 更新／檢查環境後，自動重試成功。\r\n")
 				err = nil
@@ -1182,6 +1212,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				a.postLog("⚠ 網站要求登入或年齡驗證，進入登入重試流程。\r\n")
 				a.postStatus("狀態：正在嘗試可用的網站登入狀態…")
 				err = a.retryWithAuthentication(ctx, rawURL, mode, formatID, output, cfg, err)
+				a.diagRecord("登入狀態重試", err)
 			}
 		}
 
@@ -1194,6 +1225,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			if buildErr == nil {
 				retryArgs = addSiteCompatibilityArgs(retryArgs, site)
 				err = a.runCommand(ctx, retryArgs)
+				a.diagRecord("網站相容模式", err)
 				if err == nil {
 					a.postLog("✓ 網站相容模式重試成功。\r\n")
 				}
@@ -1207,7 +1239,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		if err != nil && !a.stopRequested.Load() && site == "tiktok" && !isUnsupportedURL(err) {
 			a.postLog("⚠ TikTok 一般下載仍失敗，正在改用 TikTok 專用備援引擎。\r\n")
 			a.postStatus("狀態：正在使用 TikTok 專用備援引擎重試…")
-			if crawlerErr := a.runTikTokCrawlerFallback(ctx, rawURL, mode, formatID, output, cfg); crawlerErr == nil {
+			crawlerErr := a.runTikTokCrawlerFallback(ctx, rawURL, mode, formatID, output, cfg)
+			a.diagRecord("TikTok Crawler", crawlerErr)
+			if crawlerErr == nil {
 				err = nil
 				a.postLog("✓ TikTok 專用備援引擎處理成功。\r\n")
 			} else {
@@ -1237,12 +1271,29 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 		}
 		if err == nil && !a.stopRequested.Load() {
-			err = a.repairTruncatedDownload(ctx, cfg)
-		}
-		if err != nil {
-			if a.stopRequested.Load() {
-				return nil
+			// A result of yt-dlp's generic extractor is a guess from the page
+			// and is checked strictly; a site's own extractor is trusted more.
+			strict := site == "" && a.lastYtGeneric
+			err = a.finishStep(ctx, mode, cfg, strict)
+			if err != nil && isMediaCheckFailure(err) && site == "" && mode != 3 && mode != 4 && !a.stopRequested.Load() {
+				a.diagFail(err)
+				a.postLog("⚠ yt-dlp 取得的檔案未通過檢查，改用其他方式重新取得。\r\n")
+				a.postStatus("狀態：檔案未通過檢查，正在改用其他方式…")
+				if fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg); fallbackErr == nil {
+					err = nil
+					a.postLog("✓ 改用其他方式後取得的檔案已通過檢查。\r\n")
+				} else {
+					err = fmt.Errorf("%v；其他方式也未成功：%s", err, firstLine(fallbackErr.Error()))
+				}
+			} else if err != nil {
+				a.diagFail(err)
 			}
+		}
+		if a.stopRequested.Load() {
+			return nil
+		}
+		a.diagFinishItem(err)
+		if err != nil {
 			if safe && isBlockSignal(err) {
 				return blockStopError(err)
 			}
@@ -1740,6 +1791,7 @@ func (a *app) downloadDirectMedia(ctx context.Context, urls []string, dest, refe
 	}
 	if validFile(dest, 1024) {
 		a.postLog("✓ 檔案已存在，跳過重複下載：" + dest + "\r\n")
+		a.noteOutput(dest)
 		return nil
 	}
 	var lastErr error
@@ -1835,6 +1887,7 @@ func (a *app) downloadDirectMedia(ctx context.Context, urls []string, dest, refe
 			return err
 		}
 		a.postLog("✓ 直連媒體下載完成：" + dest + "\r\n")
+		a.noteOutput(dest)
 		return nil
 	}
 	return lastErr
@@ -1945,6 +1998,11 @@ func (a *app) runTikTokCrawlerFallback(ctx context.Context, rawURL string, mode 
 		}
 		if err := a.runTikTokCrawlerCommand(ctx, args); err != nil {
 			return err
+		}
+		if mode != 3 && mode != 2 {
+			if f, err := findNewestMediaFile(output, started); err == nil {
+				a.noteOutput(f)
+			}
 		}
 		if mode == 1 {
 			mediaPath, err := findNewestMediaFile(output, started)
@@ -2237,11 +2295,27 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 	if err != nil {
 		return fmt.Errorf("讀取網頁失敗：%w", err)
 	}
+	// try downloads one candidate and checks its file; a file that fails the
+	// check sends the loop on to the next candidate.
+	try := func(run func() error) error {
+		a.resetOutputs()
+		err := run()
+		if err == nil && !a.stopRequested.Load() {
+			err = a.finishStep(ctx, mode, cfg, true)
+		}
+		return err
+	}
+	a.resetOutputs()
 	if found, err := a.downloadPageEpisode(ctx, rawURL, finalURL, body, mode, formatID, output, cfg); found {
+		if err == nil && !a.stopRequested.Load() {
+			err = a.finishStep(ctx, mode, cfg, true)
+		}
 		if err == nil {
 			a.postLog("✓ 已從頁面播放資料下載本集。\r\n")
+			a.diagNote("頁面分集資料 ✓")
 			return nil
 		}
+		a.diagNote("頁面分集資料 ✗ " + diagErrorText(err))
 		if a.stopRequested.Load() {
 			return errStopped
 		}
@@ -2267,11 +2341,16 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 			return errStopped
 		}
 		a.postLog(fmt.Sprintf("→ 候選 %d/%d [%s]：%s\r\n", i+1, limit, c.Kind, c.URL))
-		if err := a.tryWebCandidate(ctx, c.URL, finalURL, mode, formatID, output, cfg); err == nil {
+		if err := try(func() error { return a.tryWebCandidate(ctx, c.URL, finalURL, mode, formatID, output, cfg) }); err == nil {
 			a.postLog("✓ 網頁嵌入媒體候選下載成功。\r\n")
+			a.diagNote(fmt.Sprintf("候選 %d/%d [%s] ✓ %s", i+1, limit, c.Kind, diagMediaURL(c.URL)))
 			return nil
 		} else {
 			lastErr = err
+			a.diagNote(fmt.Sprintf("候選 %d/%d [%s] ✗ %s — %s", i+1, limit, c.Kind, diagMediaURL(c.URL), diagErrorText(err)))
+			if errors.Is(err, errStopped) {
+				return err
+			}
 		}
 		// Some sites embed an intermediate player page. Scan one nested level for
 		// direct HLS/MP4/provider links and hand those back to yt-dlp.
@@ -2289,10 +2368,15 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 						continue
 					}
 					a.postLog(fmt.Sprintf("  ↳ 內嵌候選 %d/%d：%s\r\n", j+1, nestedLimit, n.URL))
-					if err := a.tryWebCandidate(ctx, n.URL, nestedFinal, mode, formatID, output, cfg); err == nil {
+					if err := try(func() error { return a.tryWebCandidate(ctx, n.URL, nestedFinal, mode, formatID, output, cfg) }); err == nil {
+						a.diagNote(fmt.Sprintf("內嵌候選 %d/%d ✓ %s", j+1, nestedLimit, diagMediaURL(n.URL)))
 						return nil
 					} else {
 						lastErr = err
+						a.diagNote(fmt.Sprintf("內嵌候選 %d/%d ✗ %s — %s", j+1, nestedLimit, diagMediaURL(n.URL), diagErrorText(err)))
+						if errors.Is(err, errStopped) {
+							return err
+						}
 					}
 				}
 			}
@@ -2307,11 +2391,24 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode int, formatID, output string, cfg settings) error {
 	site := classifySiteURL(rawURL)
 	var lastErr error
+	// layer runs one way of getting the video. A way that finishes but whose
+	// file does not pass the media check counts as failed, so the next way is
+	// tried instead of keeping a preview, an ad or the wrong episode.
+	layer := func(name string, run func() error) error {
+		a.diagBegin(name)
+		a.resetOutputs()
+		err := run()
+		if err == nil && !a.stopRequested.Load() {
+			err = a.finishStep(ctx, mode, cfg, true)
+		}
+		a.diagEnd(err)
+		return err
+	}
 
 	if site == "tiktok" {
 		if _, _, isShortDrama := parseTikTokShortDramaURL(rawURL); isShortDrama {
 			a.postLog("→ 偵測到分集網址，先使用內建解析器…\r\n")
-			if err := a.runTikTokShortDramaDirect(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+			if err := layer("內建解析", func() error { return a.runTikTokShortDramaDirect(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 				return nil
 			} else {
 				lastErr = err
@@ -2321,7 +2418,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 				a.postLog("⚠ 內建解析未成功，改以瀏覽器實際播放擷取：" + firstLine(err.Error()) + "\r\n")
 			}
 			a.postLog("→ 啟動瀏覽器播放擷取；直接觀察頁面實際載入的 HLS／MP4。\r\n")
-			if err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+			if err := layer("瀏覽器擷取", func() error { return a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 				return nil
 			} else {
 				lastErr = err
@@ -2337,7 +2434,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			}
 		}
 		a.postLog("→ 啟動 TikTok Crawler 專用解析器…\r\n")
-		if err := a.runTikTokCrawlerFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+		if err := layer("TikTok Crawler", func() error { return a.runTikTokCrawlerFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2352,7 +2449,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 	// site-specific resolver based on the page's public PRELOADED_STATE data.
 	if site == "haokan" {
 		a.postLog("→ 先使用內建解析器尋找公開媒體網址…\r\n")
-		if err := a.runHaokanFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+		if err := layer("內建解析", func() error { return a.runHaokanFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2361,7 +2458,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			}
 			a.postLog("⚠ 內建解析未成功，改用瀏覽器播放擷取：" + firstLine(err.Error()) + "\r\n")
 		}
-		if err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+		if err := layer("瀏覽器擷取", func() error { return a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2374,7 +2471,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 
 	if site == "dramatip" || site == "" {
 		a.postLog("→ 啟動網頁播放器解析；適用於 yt-dlp 尚未支援的公開網頁。\r\n")
-		if err := a.runGenericWebPageFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+		if err := layer("網頁解析", func() error { return a.runGenericWebPageFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2387,7 +2484,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			}
 			a.postLog("⚠ 靜態網頁解析未找到串流，改用瀏覽器網路嗅探：" + firstLine(err.Error()) + "\r\n")
 		}
-		if err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg); err == nil {
+		if err := layer("瀏覽器擷取", func() error { return a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg) }); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -2417,7 +2514,7 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 	if strings.TrimSpace(cfg.ExtraArgs) != "" {
 		a.postLog("ℹ 進階參數是 yt-dlp 專用語法，切換 Lux 時不會直接套用，以避免參數不相容。\r\n")
 	}
-	if err := a.runLuxFallback(ctx, rawURL, mode, formatID, output, cfg); err != nil {
+	if err := layer("Lux", func() error { return a.runLuxFallback(ctx, rawURL, mode, formatID, output, cfg) }); err != nil {
 		previous := ""
 		if lastErr != nil {
 			previous = "\n\n前一層解析：" + firstLine(lastErr.Error())
@@ -2519,6 +2616,13 @@ func (a *app) runLuxFallback(ctx context.Context, rawURL string, mode int, forma
 	if err := a.runLuxCommand(ctx, args); err != nil {
 		return err
 	}
+	if mode != 3 {
+		f, err := findNewestMediaFile(output, started)
+		if err != nil {
+			return errors.New("Lux 回報完成，但儲存位置中沒有新的檔案")
+		}
+		a.noteOutput(f)
+	}
 	if mode == 1 {
 		mediaPath, err := findNewestMediaFile(output, started)
 		if err != nil {
@@ -2599,6 +2703,7 @@ func (a *app) convertMediaToMP3(ctx context.Context, input string) error {
 	if validFile(out, 1024) {
 		_ = os.Remove(input)
 		a.postLog("✓ 已轉成 MP3：" + out + "\r\n")
+		a.noteOutput(out)
 		return nil
 	}
 	return errors.New("FFmpeg 執行完成但沒有產生 MP3")
@@ -3559,6 +3664,7 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	a.lastYtArgs, a.lastYtFiles = nil, nil
 	if isYtDlp {
 		a.lastYtArgs = append([]string(nil), args...)
+		a.lastYtGeneric = false
 	}
 	reader := bufio.NewReaderSize(pr, 64*1024)
 	var readErr error
@@ -3570,6 +3676,9 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 			if isYtDlp && strings.Contains(line, "[") {
 				for _, f := range downloadedFilesFromOutput(line) {
 					a.lastYtFiles = append(a.lastYtFiles, f)
+				}
+				if strings.HasPrefix(strings.TrimSpace(line), "[generic]") {
+					a.lastYtGeneric = true
 				}
 			}
 			displayLine := strings.ReplaceAll(strings.ReplaceAll(line, "\r\n", "\n"), "\n", "\r\n")
@@ -3602,6 +3711,11 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	}
 	if readErr != nil {
 		return &commandRunError{Cause: readErr, Summary: "讀取 " + engine + " 執行訊息失敗：" + readErr.Error()}
+	}
+	if isYtDlp {
+		for _, f := range a.lastYtFiles {
+			a.noteOutput(f)
+		}
 	}
 	return nil
 }

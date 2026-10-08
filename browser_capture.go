@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,6 +50,25 @@ type browserMediaCandidate struct {
 	PlayedURL string
 	// EpisodeMatch: the stream's path carries the episode number of the page.
 	EpisodeMatch bool
+	// Alternates are the other streams seen during the same capture, best
+	// first; they are tried when the chosen one fails the media check.
+	Alternates []browserMediaCandidate
+}
+
+// maxCaptureAlternates limits how many other captured streams are tried.
+const maxCaptureAlternates = 3
+
+// captureAlternates lists the seen candidates other than chosen, best first.
+func captureAlternates(seen []browserMediaCandidate, chosen string, isAd func(string) bool) []browserMediaCandidate {
+	var out []browserMediaCandidate
+	for _, c := range seen {
+		if candidateKey(c.URL) == candidateKey(chosen) || (isAd != nil && isAd(c.URL)) {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return betterCaptureCandidate(out[i], out[j]) })
+	return out
 }
 
 // pageEpisodeNumber is the episode a page address asks for: a trailing number
@@ -496,6 +516,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 	}
 	a.postLog("✓ FFmpeg 已使用瀏覽器實際播放請求完成下載：" + dest + "\r\n")
 	a.lastCaptureFile = dest
+	a.noteOutput(dest)
 	return nil
 }
 
@@ -512,6 +533,47 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 	if err != nil {
 		return err
 	}
+	alternates := candidate.Alternates
+	candidate.Alternates = nil
+	a.diagNote(fmt.Sprintf("擷取到 %d 個串流，選用：%s", len(alternates)+1, describeCaptureCandidate(candidate)))
+	for k, alt := range alternates {
+		if k >= 5 {
+			a.diagNote(fmt.Sprintf("其他串流：…（另有 %d 個）", len(alternates)-k))
+			break
+		}
+		a.diagNote("其他串流：" + describeCaptureCandidate(alt))
+	}
 	candidate = a.upgradeToBestVariant(candidate, mode)
-	return a.downloadBrowserCapturedMedia(ctx, rawURL, candidate, mode, formatID, output, cfg)
+	// download fetches one captured stream and checks the file.
+	download := func(c browserMediaCandidate) error {
+		a.resetOutputs()
+		err := a.downloadBrowserCapturedMedia(ctx, rawURL, c, mode, formatID, output, cfg)
+		if err == nil && !a.stopRequested.Load() {
+			err = a.finishStep(ctx, mode, cfg, true)
+		}
+		return err
+	}
+	err = download(candidate)
+	if err == nil || !isMediaCheckFailure(err) || a.stopRequested.Load() {
+		return err
+	}
+	// The chosen stream was a preview, an ad, a lone audio/video track or a
+	// repeat of an earlier episode: try the other streams the page played.
+	for k, alt := range alternates {
+		if k >= maxCaptureAlternates || a.stopRequested.Load() {
+			break
+		}
+		a.postLog(fmt.Sprintf("→ 改試這次擷取到的其他串流 %d/%d（%s，%s）…\r\n", k+1, min(len(alternates), maxCaptureAlternates), alt.Kind, hostOnly(alt.URL)))
+		altErr := download(alt)
+		if altErr == nil {
+			a.postLog("✓ 改用其他串流後，檔案已通過檢查。\r\n")
+			a.diagNote("改用其他串流 ✓ " + describeCaptureCandidate(alt))
+			return nil
+		}
+		a.diagNote("改用其他串流 ✗ " + describeCaptureCandidate(alt) + " — " + diagErrorText(altErr))
+		if errors.Is(altErr, errStopped) {
+			return altErr
+		}
+	}
+	return err
 }

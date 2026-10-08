@@ -376,6 +376,7 @@ func (a *app) bindUI() {
 		openInBrowser(path)
 		return ""
 	})
+	_ = w.Bind("goReportPack", func(id int) string { return a.exportReportPack(id) })
 	_ = w.Bind("goCopyLog", func() string {
 		text := redactSecrets(a.sessionLogText())
 		if strings.TrimSpace(text) == "" {

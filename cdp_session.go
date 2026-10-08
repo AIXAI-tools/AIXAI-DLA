@@ -766,6 +766,15 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		}
 	}()
 	var best browserMediaCandidate
+	// seen keeps every non-ad stream of this capture (best one aside, they are
+	// the alternates tried when the chosen file fails the media check).
+	var seen []browserMediaCandidate
+	seenKeys := map[string]bool{}
+	finish := func(c browserMediaCandidate) browserMediaCandidate {
+		c = withPageJSON(c)
+		c.Alternates = captureAlternates(seen, c.URL, isAd)
+		return c
+	}
 	var settle *time.Timer
 	var settleC <-chan time.Time
 	for {
@@ -774,7 +783,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			return browserMediaCandidate{}, ctx.Err()
 		case <-b.readerDone:
 			if best.URL != "" && !isAd(best.URL) {
-				return withPageJSON(best), nil
+				return finish(best), nil
 			}
 			return browserMediaCandidate{}, errors.New("DevTools 網路監聽中斷（瀏覽器視窗可能被關閉）")
 		case <-adCheck.C:
@@ -817,6 +826,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				continue
 			}
 			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode)
+			if key := candidateKey(c.URL); !seenKeys[key] && len(seen) < 40 {
+				seenKeys[key] = true
+				seen = append(seen, c)
+			}
 			if betterCaptureCandidate(c, best) {
 				best = c
 				if best.Score >= 125 {
@@ -858,11 +871,11 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				} else if pageEpisode > 0 && streamHasNumberSegment(best.URL) {
 					a.postLog(fmt.Sprintf("⚠ 沒有找到網址含第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}
-				return withPageJSON(best), nil
+				return finish(best), nil
 			}
 		case <-deadline.C:
 			if best.URL != "" && !isAd(best.URL) {
-				return withPageJSON(best), nil
+				return finish(best), nil
 			}
 			if isTikTokDrama {
 				return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內沒有取得第 %d 集的影片網址；這一集可能無法以你的帳號存取", tiktokEpisode)

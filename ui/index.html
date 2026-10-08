@@ -626,7 +626,8 @@ function renderJobs(){
     const cur=j.items.find(t=>t.state==="running"); const part=cur&&cur.pct?cur.pct/100:0;
     const line = j.state==="running" ? (j.status||"") : j.state==="queued" ? (j.waiting||"等待開始…") : (j.message||"");
     const btns=(JOB_BTNS[j.state]||[]).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
-      + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`;
+      + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`
+      + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
     const items=j.items.map((t,i)=>`<li class="task ${t.state}"><span class="ic">${icon[t.state]||"○"}</span>
       <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.msg)}</div>`:""}</div>
       <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span></li>`).join("");
@@ -644,6 +645,7 @@ $("jobs").onclick=async e=>{
   const b=e.target.closest("button[data-act]"); if(!b) return;
   const id=+b.dataset.id, act=b.dataset.act, j=state.jobs[id];
   if(act==="log"){ const err=await goOpenLogFile(id); if(err) toast(err); return; }
+  if(act==="report"){ const msg=await goReportPack(id); if(msg) toast(msg); return; }
   if(act==="folder"){ const err=await goOpenFolder(j?j.output:$("output").value); if(err) toast(err); return; }
   if(act==="abort" && !confirm(`確定要中止任務 ${id}？已下載完成的檔案會保留，但這個任務不能再繼續。`)) return;
   const err=await goJobAction(id,act); if(err) toast(err);

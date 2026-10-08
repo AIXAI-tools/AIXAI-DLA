@@ -44,6 +44,8 @@ func downloadedFilesFromOutput(output string) []string {
 			add(strings.TrimPrefix(line, "[download] Destination: "))
 		case strings.HasPrefix(line, "[Merger] Merging formats into "):
 			add(strings.TrimPrefix(line, "[Merger] Merging formats into "))
+		case strings.HasPrefix(line, "[ExtractAudio] Destination: "):
+			add(strings.TrimPrefix(line, "[ExtractAudio] Destination: "))
 		case strings.HasPrefix(line, "[download] ") && strings.HasSuffix(line, " has already been downloaded"):
 			add(strings.TrimSuffix(strings.TrimPrefix(line, "[download] "), " has already been downloaded"))
 		}
@@ -159,6 +161,7 @@ func (a *app) repairTruncatedDownload(ctx context.Context, cfg settings) error {
 		return nil
 	}
 	a.postLog(fmt.Sprintf("⚠ 下載結果不完整：%s 只收到影片開頭（伺服器每次只回傳一小段，但回報為完成）。\r\n", filepath.Base(bad[0])))
+	a.diagNote("檔案不完整（只有開頭片段），改用分段下載補齊")
 	if userSetChunkSize(cfg.ExtraArgs) {
 		return errors.New("下載的影片不完整（只有開頭片段）。附加參數已自訂 --http-chunk-size，請調小該值或移除後再試。")
 	}
