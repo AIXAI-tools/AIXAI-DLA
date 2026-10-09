@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.0"
+	appVersion = "4.1.1"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -567,6 +567,9 @@ type app struct {
 	curItem   int
 	// diag is the current item's trail of tried ways (diagnostics.go).
 	diag *itemDiag
+	// pageEpisodeHint: the stream the page data lists for the current page
+	// (page_episodes.go); only used while Page equals the item's address.
+	pageEpisodeHint pageEpisodeHint
 
 	busy          atomic.Bool
 	stopRequested atomic.Bool

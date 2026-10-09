@@ -144,3 +144,38 @@ func TestLookupPageEpisodeMissing(t *testing.T) {
 		t.Fatal("a lone entry is not a list")
 	}
 }
+
+// Page data written as JSON text keeps "&" as \u0026; the stream address must
+// be decoded or the signed query string is lost (HTTP 403).
+func TestPageEpisodeStreamUnescapesJSON(t *testing.T) {
+	var b strings.Builder
+	for ep := 1; ep <= 4; ep++ {
+		fmt.Fprintf(&b, `{\"episode\":%d,\"play_url\":\"https:\/\/cdn.example\/h%d\/v.m3u8?ts=1\u0026secret=s%d\u0026usr=u\"},`, ep, ep, ep)
+	}
+	body := strings.ReplaceAll(b.String(), `\"`, `"`)
+	got, ok := episodeStreamFromPage(body, 3)
+	want := "https://cdn.example/h3/v.m3u8?ts=1&secret=s3&usr=u"
+	if !ok || got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestSameStreamPath(t *testing.T) {
+	a := "https://cdn.example/h3/v.m3u8?ts=1&secret=a"
+	if !sameStreamPath(a, "https://CDN.example/h3/v.m3u8?ts=2&secret=b") {
+		t.Fatal("same file with different query should match")
+	}
+	if sameStreamPath(a, "https://cdn.example/h4/v.m3u8?ts=1&secret=a") {
+		t.Fatal("different episode file must not match")
+	}
+}
+
+func TestPageEpisodeOutputName(t *testing.T) {
+	body := "<title>Some Show 第 3 集 - Site</title>"
+	if got := capturedOutputBase("https://x/detail/watch/some-show-3/3", pageEpisodeTitle("https://x/detail/watch/some-show-3/3", body)); got != "some-show-3_E003" {
+		t.Fatalf("got %q", got)
+	}
+	if got := capturedOutputBase("https://x/play/16465/3", pageEpisodeTitle("https://x/play/16465/3", body)); got != "Some Show 第 3 集 - Site_E003" {
+		t.Fatalf("got %q", got)
+	}
+}

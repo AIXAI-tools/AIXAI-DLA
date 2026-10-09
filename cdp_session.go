@@ -471,6 +471,13 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	}
 	_, tiktokEpisode, isTikTokDrama := parseTikTokShortDramaURL(rawURL)
 	pageEpisode := pageEpisodeNumber(rawURL)
+	// The page data named this episode's stream but it could not be fetched
+	// directly: the stream with the same path is the episode, whatever else
+	// the page preloads.
+	listedStream := ""
+	if a.pageEpisodeHint.Page == rawURL {
+		listedStream = a.pageEpisodeHint.Stream
+	}
 
 	states := map[string]*cdpRequestState{}
 	candidates := make(chan browserMediaCandidate, 128)
@@ -825,7 +832,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			if isTikTokDrama {
 				continue
 			}
-			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode)
+			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode) || (listedStream != "" && sameStreamPath(c.URL, listedStream))
 			if key := candidateKey(c.URL); !seenKeys[key] && len(seen) < 40 {
 				seenKeys[key] = true
 				seen = append(seen, c)
@@ -834,7 +841,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				best = c
 				if best.Score >= 125 {
 					wait := 3500 * time.Millisecond
-					if pageEpisode > 0 && !best.EpisodeMatch && streamHasNumberSegment(best.URL) {
+					if pageEpisode > 0 && !best.EpisodeMatch && (streamHasNumberSegment(best.URL) || listedStream != "") {
 						// The stream is numbered, but not with this page's
 						// episode: likely a preloaded neighbouring episode, so
 						// give the page's own episode stream time to show up.
@@ -868,8 +875,8 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
 				if pageEpisode > 0 && best.EpisodeMatch {
 					a.postLog(fmt.Sprintf("✓ 串流網址與第 %d 集相符。\r\n", pageEpisode))
-				} else if pageEpisode > 0 && streamHasNumberSegment(best.URL) {
-					a.postLog(fmt.Sprintf("⚠ 沒有找到網址含第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
+				} else if pageEpisode > 0 && (streamHasNumberSegment(best.URL) || listedStream != "") {
+					a.postLog(fmt.Sprintf("⚠ 沒有找到確定屬於第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}
 				return finish(best), nil
 			}

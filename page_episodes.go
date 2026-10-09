@@ -21,7 +21,35 @@ var (
 	pageStreamRE  = regexp.MustCompile(`"(?:play_url|playUrl|video_url|videoUrl|stream_url|streamUrl|hls_url|hlsUrl|url|src|file)"\s*:\s*"(https?:[^"]+?\.(?:m3u8|mp4|mpd)[^"]*)"`)
 	pageEpisodeRE = regexp.MustCompile(`"(route_episode_number|episode_number|episodeNumber|episode_no|episodeNo|episode|ep|number)"\s*:\s*"?(\d{1,4})"?[,}]`)
 	pageTitleRE   = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	jsonEscapeRE  = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
 )
+
+// unescapeJSONText decodes \uXXXX escapes left in a URL copied out of JSON
+// text (e.g. & for "&"); without this the query string is broken and the
+// stream server answers 403.
+func unescapeJSONText(s string) string {
+	return jsonEscapeRE.ReplaceAllStringFunc(s, func(m string) string {
+		n, err := strconv.ParseUint(m[2:], 16, 32)
+		if err != nil {
+			return m
+		}
+		return string(rune(n))
+	})
+}
+
+// pageEpisodeHint is the stream the page data lists for the episode on Page.
+type pageEpisodeHint struct{ Page, Stream string }
+
+// sameStreamPath reports whether two stream addresses name the same file
+// (same host and path; the signed query string may differ per request).
+func sameStreamPath(a, b string) bool {
+	ua, err1 := url.Parse(a)
+	ub, err2 := url.Parse(b)
+	if err1 != nil || err2 != nil || ua.Path == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host) && ua.Path == ub.Path
+}
 
 type pageEpisodeEntry struct {
 	Episode int
@@ -49,7 +77,7 @@ func pageEpisodeEntries(body string) []pageEpisodeEntry {
 			}
 		}
 		if ep > 0 {
-			out = append(out, pageEpisodeEntry{Episode: ep, Stream: html.UnescapeString(body[m[2]:m[3]])})
+			out = append(out, pageEpisodeEntry{Episode: ep, Stream: html.UnescapeString(unescapeJSONText(body[m[2]:m[3]]))})
 		}
 	}
 	return out
@@ -101,6 +129,21 @@ func pageTitle(body string) string {
 	return strings.TrimSpace(html.UnescapeString(m[1]))
 }
 
+// pageEpisodeTitle is the name base for a page-data download. A readable
+// series name in the address (…/series-name/3) wins, so files are named and
+// sorted like browser-capture downloads (series-name_E003); the page title
+// (which often repeats the episode number and site text) is only used when
+// that address segment is a bare number.
+func pageEpisodeTitle(rawURL, body string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+		if len(parts) >= 2 && !allDigits(parts[len(parts)-2]) && safeWindowsBaseName(parts[len(parts)-2]) != "" {
+			return ""
+		}
+	}
+	return pageTitle(body)
+}
+
 // downloadPageEpisode downloads the stream the page data lists for the page's
 // episode, named after the page title (which includes the episode number).
 func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body string, mode int, formatID, output string, cfg settings) (bool, error) {
@@ -112,6 +155,9 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		}
 		return false, nil
 	}
+	// Remember the listed stream: if it cannot be fetched directly, the capture
+	// browser uses it to tell this episode apart from preloaded neighbours.
+	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Stream: stream}
 	a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
 	streamMode := mode
 	if mode == 2 {
@@ -121,7 +167,7 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 	if err != nil {
 		return true, err
 	}
-	args = replaceOutputTemplate(args, capturedOutputBase(rawURL, pageTitle(body))+".%(ext)s")
+	args = replaceOutputTemplate(args, capturedOutputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
 	extras := []string{"--no-playlist", "--referer", finalURL, "--impersonate", "chrome"}
 	if base, err := url.Parse(finalURL); err == nil && base.Scheme != "" && base.Host != "" {
 		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
