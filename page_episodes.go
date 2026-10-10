@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/url"
@@ -18,10 +20,14 @@ import (
 // no need to open the capture browser.
 
 var (
-	pageStreamRE  = regexp.MustCompile(`"(?:play_url|playUrl|video_url|videoUrl|stream_url|streamUrl|hls_url|hlsUrl|url|src|file)"\s*:\s*"(https?:[^"]+?\.(?:m3u8|mp4|mpd)[^"]*)"`)
+	pageStreamRE  = regexp.MustCompile(`"(?:direct_play_url|directPlayUrl|play_url|playUrl|video_url|videoUrl|stream_url|streamUrl|hls_url|hlsUrl|url|src|file)"\s*:\s*"(https?:[^"]+?\.(?:m3u8|mp4|mpd)[^"]*)"`)
 	pageEpisodeRE = regexp.MustCompile(`"(route_episode_number|episode_number|episodeNumber|episode_no|episodeNo|episode|ep|number)"\s*:\s*"?(\d{1,4})"?[,}]`)
-	pageTitleRE   = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	jsonEscapeRE  = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	// pageOpaqueStreamRE: stream keys whose address has no file extension
+	// (e.g. a signed player proxy). Used only when the episode has no address
+	// with a media extension.
+	pageOpaqueStreamRE = regexp.MustCompile(`"(?:direct_play_url|directPlayUrl|play_url|playUrl|stream_url|streamUrl|hls_url|hlsUrl)"\s*:\s*"(https?:[^"]+)"`)
+	pageTitleRE        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	jsonEscapeRE       = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
 )
 
 // unescapeJSONText decodes \uXXXX escapes left in a URL copied out of JSON
@@ -37,33 +43,116 @@ func unescapeJSONText(s string) string {
 	})
 }
 
-// pageEpisodeHint is the stream the page data lists for the episode on Page.
-type pageEpisodeHint struct{ Page, Stream string }
+// pageEpisodeHint holds the streams the page data lists for the episode on Page.
+type pageEpisodeHint struct {
+	Page    string
+	Streams []string
+}
+
+// matches reports whether stream is one the page data lists for this episode.
+func (h pageEpisodeHint) matches(stream string) bool {
+	for _, s := range h.Streams {
+		if sameStreamPath(stream, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // sameStreamPath reports whether two stream addresses name the same file
 // (same host and path; the signed query string may differ per request).
+// Signed proxy addresses (a path segment carrying a base64 JSON token) are
+// re-signed on every page load, so they are compared by the source file the
+// token names instead.
 func sameStreamPath(a, b string) bool {
 	ua, err1 := url.Parse(a)
 	ub, err2 := url.Parse(b)
 	if err1 != nil || err2 != nil || ua.Path == "" {
 		return false
 	}
-	return strings.EqualFold(ua.Host, ub.Host) && ua.Path == ub.Path
+	if strings.EqualFold(ua.Host, ub.Host) && ua.Path == ub.Path {
+		return true
+	}
+	sa := signedStreamSource(ua.Path)
+	return sa != "" && sa == signedStreamSource(ub.Path)
+}
+
+// signedStreamSource returns the "src" named by a base64 JSON token in the
+// address path ("eyJ…" segment, optionally followed by ".signature").
+func signedStreamSource(path string) string {
+	for _, seg := range strings.Split(path, "/") {
+		if !strings.HasPrefix(seg, "eyJ") {
+			continue
+		}
+		part := strings.TrimRight(strings.SplitN(seg, ".", 2)[0], "=")
+		raw, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil {
+			raw, err = base64.RawStdEncoding.DecodeString(part)
+		}
+		if err != nil {
+			continue
+		}
+		var tok map[string]interface{}
+		if json.Unmarshal(raw, &tok) != nil {
+			continue
+		}
+		if src, _ := tok["src"].(string); src != "" {
+			return src
+		}
+	}
+	return ""
 }
 
 type pageEpisodeEntry struct {
 	Episode int
 	Stream  string
+	// Opaque: the address has no media file extension (less certain to be
+	// directly downloadable than one that has).
+	Opaque bool
+}
+
+// enclosingObjectStart returns the index of the "{" that opens the JSON
+// object containing pos (nested objects before pos are skipped), or -1.
+func enclosingObjectStart(body string, pos int) int {
+	depth := 0
+	for i := pos - 1; i >= 0 && pos-i <= 64*1024; i-- {
+		switch body[i] {
+		case '}':
+			depth++
+		case '{':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+	}
+	return -1
 }
 
 // pageEpisodeEntries lists the (episode, stream) pairs found in the page data.
 // Each stream is paired with an episode number from its own object: the text
-// between the stream and the nearest "{" before it.
+// between the "{" that opens the object holding the stream and the stream.
 func pageEpisodeEntries(body string) []pageEpisodeEntry {
 	body = strings.ReplaceAll(body, `\/`, `/`)
 	var out []pageEpisodeEntry
+	type match struct {
+		loc    []int
+		opaque bool
+	}
+	var matches []match
+	taken := map[int]bool{}
 	for _, m := range pageStreamRE.FindAllStringSubmatchIndex(body, 2000) {
-		start := strings.LastIndex(body[:m[0]], "{")
+		matches = append(matches, match{m, false})
+		taken[m[2]] = true
+	}
+	for _, m := range pageOpaqueStreamRE.FindAllStringSubmatchIndex(body, 2000) {
+		if !taken[m[2]] {
+			matches = append(matches, match{m, true})
+		}
+	}
+	for _, mm := range matches {
+		m := mm.loc
+		start := enclosingObjectStart(body, m[0])
 		if start < 0 {
 			continue
 		}
@@ -77,7 +166,7 @@ func pageEpisodeEntries(body string) []pageEpisodeEntry {
 			}
 		}
 		if ep > 0 {
-			out = append(out, pageEpisodeEntry{Episode: ep, Stream: html.UnescapeString(unescapeJSONText(body[m[2]:m[3]]))})
+			out = append(out, pageEpisodeEntry{Episode: ep, Stream: html.UnescapeString(unescapeJSONText(body[m[2]:m[3]])), Opaque: mm.opaque})
 		}
 	}
 	return out
@@ -94,6 +183,16 @@ func episodeStreamFromPage(body string, ep int) (string, bool) {
 // lookupPageEpisode also reports whether the page has an episode list at all
 // and the highest episode in it.
 func lookupPageEpisode(body string, ep int) (stream string, listed bool, maxEp int) {
+	streams, listed, maxEp := pageEpisodeStreams(body, ep)
+	if len(streams) > 0 {
+		stream = streams[0]
+	}
+	return stream, listed, maxEp
+}
+
+// pageEpisodeStreams lists every stream the page data gives for episode ep,
+// addresses with a media file extension first.
+func pageEpisodeStreams(body string, ep int) (streams []string, listed bool, maxEp int) {
 	entries := pageEpisodeEntries(body)
 	distinct := map[int]bool{}
 	for _, e := range entries {
@@ -103,14 +202,20 @@ func lookupPageEpisode(body string, ep int) (stream string, listed bool, maxEp i
 		}
 	}
 	if ep <= 0 || len(distinct) < 3 {
-		return "", false, 0
+		return nil, false, 0
 	}
+	var opaque []string
 	for _, e := range entries {
-		if e.Episode == ep {
-			return e.Stream, true, maxEp
+		if e.Episode != ep {
+			continue
+		}
+		if e.Opaque {
+			opaque = append(opaque, e.Stream)
+		} else {
+			streams = append(streams, e.Stream)
 		}
 	}
-	return "", true, maxEp
+	return append(streams, opaque...), true, maxEp
 }
 
 // errNoSuchEpisode: the page lists the series' episodes and this one is not
@@ -148,16 +253,18 @@ func pageEpisodeTitle(rawURL, body string) string {
 // episode, named after the page title (which includes the episode number).
 func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body string, mode int, formatID, output string, cfg settings) (bool, error) {
 	ep := pageEpisodeNumber(rawURL)
-	stream, listed, maxEp := lookupPageEpisode(body, ep)
-	if stream == "" {
+	streams, listed, maxEp := pageEpisodeStreams(body, ep)
+	if len(streams) == 0 {
 		if listed {
 			return true, &errNoSuchEpisode{ep: ep, max: maxEp}
 		}
 		return false, nil
 	}
-	// Remember the listed stream: if it cannot be fetched directly, the capture
-	// browser uses it to tell this episode apart from preloaded neighbours.
-	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Stream: stream}
+	stream := streams[0]
+	// Remember the listed streams: if they cannot be fetched directly, the
+	// capture browser uses them to tell this episode apart from preloaded
+	// neighbours.
+	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Streams: streams}
 	a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
 	streamMode := mode
 	if mode == 2 {

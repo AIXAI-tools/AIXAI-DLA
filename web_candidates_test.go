@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -193,5 +194,42 @@ func TestIsExtractorFailure(t *testing.T) {
 		if got := isExtractorFailure(errors.New(msg)); got != want {
 			t.Errorf("isExtractorFailure(%q) = %v, want %v", msg, got, want)
 		}
+	}
+}
+
+// signedToken builds a base64 JSON path token like the ones signed player
+// proxies put in their stream addresses.
+func signedToken(src string, exp int) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"v":1,"src":%q,"exp":%d}`, src, exp))) + ".sig" + fmt.Sprint(exp)
+}
+
+// Page data whose play_url is a signed proxy without a file extension and
+// whose direct_play_url is the episode's MP4: the MP4 is taken, the proxy is
+// kept as a hint, and a nested object before the MP4 does not hide the
+// episode number.
+func TestPageEpisodeDirectPlayURL(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<script>var data={"episodes":[`)
+	for i := 1; i <= 5; i++ {
+		fmt.Fprintf(&b, `{"id":%d,"route_episode_number":%d,"number":%d,"play_url":"https:\/\/stream.example.com\/e\/m\/%s?mh=1","multi_subtitles":[{"lang":"en","number":9}],"direct_play_url":"https:\/\/cdn.example.com\/v\/%d\/ep%d-abc.mp4"},`,
+			100+i, i, i, signedToken(fmt.Sprintf("https://origin.example.com/b/%d/720p.m3u8", i), 1000), 100+i, i)
+	}
+	b.WriteString(`]};</script>`)
+	streams, listed, max := pageEpisodeStreams(b.String(), 3)
+	if !listed || max != 5 || len(streams) != 2 {
+		t.Fatalf("got %q %v %d", streams, listed, max)
+	}
+	if streams[0] != "https://cdn.example.com/v/103/ep3-abc.mp4" {
+		t.Fatalf("first stream %q", streams[0])
+	}
+	hint := pageEpisodeHint{Streams: streams}
+	// The capture browser sees the proxy re-signed (other host, expiry, signature).
+	ep3 := "https://stream-e1.example.com/e/m/" + signedToken("https://origin.example.com/b/3/720p.m3u8", 2000) + "?mh=1"
+	ep4 := "https://stream-e1.example.com/e/m/" + signedToken("https://origin.example.com/b/4/720p.m3u8", 2000) + "?mh=1"
+	if !hint.matches(ep3) {
+		t.Fatal("re-signed stream of episode 3 not matched")
+	}
+	if hint.matches(ep4) {
+		t.Fatal("preloaded episode 4 taken for episode 3")
 	}
 }

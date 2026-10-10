@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.4"
+	appVersion = "4.1.5"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -2366,6 +2366,16 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer string, mo
 func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode int, formatID, output string, cfg settings) error {
 	a.postLog("→ 正在掃描網頁中的 iframe、video/source、HLS/MP4 與播放器 JSON…\r\n")
 	body, finalURL, err := fetchHTMLPage(ctx, rawURL, cfg, "")
+	if err != nil && strings.Contains(err.Error(), "網頁 HTTP 5") {
+		// A passing server error: read once more, so the page's episode data is
+		// not lost to a browser capture that may pick a preloaded neighbour.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+		body, finalURL, err = fetchHTMLPage(ctx, rawURL, cfg, "")
+	}
 	if err != nil {
 		return fmt.Errorf("讀取網頁失敗：%w", err)
 	}
