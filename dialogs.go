@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -16,6 +17,57 @@ const OFN_ALLOWMULTISELECT = 0x00000200
 // Native Windows dialogs used by the web UI. They run on the UI thread (bound
 // calls arrive there) and are owned by the main window.
 
+const (
+	bffmInitialized   = 1
+	bffmSelChanged    = 2
+	bffmSetSelectionW = 0x0400 + 103 // WM_USER + 103
+	tvmGetNextItem    = 0x1100 + 10
+	tvmEnsureVisible  = 0x1100 + 20
+	tvgnCaret         = 0x0009
+)
+
+var procFindWindowExW = user32.NewProc("FindWindowExW")
+
+// browseInitCallback opens the folder dialog at the folder passed in lpData.
+// Created once: Windows callbacks are a limited resource.
+var browseInitCallback = syscall.NewCallback(func(hwnd, msg, lParam, lpData uintptr) uintptr {
+	switch msg {
+	case bffmInitialized:
+		if lpData != 0 {
+			procSendMessageW.Call(hwnd, bffmSetSelectionW, 1, lpData)
+		}
+	case bffmSelChanged:
+		// The new-style dialog selects a deep folder without scrolling the
+		// tree to it; bring the selected item into view.
+		host, _, _ := procFindWindowExW.Call(hwnd, 0, uintptr(unsafe.Pointer(utf16Ptr("SHBrowseForFolder ShellNameSpace Control"))), 0)
+		if host != 0 {
+			if tree, _, _ := procFindWindowExW.Call(host, 0, uintptr(unsafe.Pointer(utf16Ptr("SysTreeView32"))), 0); tree != 0 {
+				if item, _, _ := procSendMessageW.Call(tree, tvmGetNextItem, tvgnCaret, 0); item != 0 {
+					procSendMessageW.Call(tree, tvmEnsureVisible, 0, item)
+				}
+			}
+		}
+	}
+	return 0
+})
+
+// existingFolder returns dir, or its nearest parent that exists.
+func existingFolder(dir string) string {
+	dir = strings.TrimSpace(dir)
+	for dir != "" {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// pickFolder shows the folder dialog, starting at the current save folder.
 func (a *app) pickFolder(current string) string {
 	display := make([]uint16, 260)
 	bi := browseInfo{
@@ -24,7 +76,14 @@ func (a *app) pickFolder(current string) string {
 		LpszTitle:      utf16Ptr("選擇下載檔案的儲存資料夾"),
 		UlFlags:        BIF_RETURNONLYFSDIRS | BIF_EDITBOX | BIF_NEWDIALOGSTYLE,
 	}
+	var start *uint16
+	if dir := existingFolder(current); dir != "" {
+		start = utf16Ptr(dir)
+		bi.Lpfn = browseInitCallback
+		bi.LParam = uintptr(unsafe.Pointer(start))
+	}
 	pidl, _, _ := procSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
+	runtime.KeepAlive(start)
 	if pidl == 0 {
 		return ""
 	}
