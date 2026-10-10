@@ -452,6 +452,7 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 		paths[i], infos[i] = c.path, c.info
 	}
 	a.makePlayable(ctx, paths, infos, mode, cfg) // compat.go
+	a.itemFiles = append(a.itemFiles, paths...)
 	return nil
 }
 

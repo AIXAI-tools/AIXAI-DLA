@@ -41,6 +41,7 @@ type failedView struct {
 	ID     int    `json:"id"`
 	URL    string `json:"url"`
 	Reason string `json:"reason"`
+	Brief  string `json:"brief"`
 	JobID  int    `json:"jobId"`
 	Item   int    `json:"item"`
 	Time   string `json:"time"`
@@ -90,7 +91,7 @@ func (a *app) failedViews() []failedView {
 	defer a.failedMu.Unlock()
 	out := make([]failedView, 0, len(a.failed))
 	for _, e := range a.failed {
-		out = append(out, failedView{ID: e.ID, URL: e.URL, Reason: e.Reason, JobID: e.JobID, Item: e.Item,
+		out = append(out, failedView{ID: e.ID, URL: e.URL, Reason: e.Reason, Brief: errorBrief(e.Reason), JobID: e.JobID, Item: e.Item,
 			Time: e.Time.Format("01/02 15:04"), Count: e.Count})
 	}
 	return out

@@ -37,6 +37,7 @@ const (
 type jobItem struct {
 	State string `json:"state"` // pending, running, done, failed
 	Msg   string `json:"msg,omitempty"`
+	Brief string `json:"brief,omitempty"` // short Chinese reason of a failure (error_brief.go)
 }
 
 type job struct {
@@ -65,6 +66,7 @@ type jobView struct {
 	Title   string    `json:"title"`
 	State   string    `json:"state"`
 	Message string    `json:"message,omitempty"`
+	Brief   string    `json:"brief,omitempty"` // short Chinese reason when the task failed
 	Status  string    `json:"status,omitempty"`
 	URLs    []string  `json:"urls"`
 	Items   []jobItem `json:"items"`
@@ -122,7 +124,11 @@ func (j *job) view() jobView {
 	if len(sites) > 0 {
 		title += "｜" + strings.Join(sites, "、")
 	}
-	return jobView{ID: j.ID, Title: title, State: j.State, Message: j.Message, Status: j.status,
+	brief := ""
+	if j.State == jobFailed {
+		brief = errorBrief(j.Message)
+	}
+	return jobView{ID: j.ID, Title: title, State: j.State, Message: j.Message, Brief: brief, Status: j.status,
 		URLs: j.URLs, Items: append([]jobItem(nil), j.Items...), Output: j.Output, Sites: sites}
 }
 
@@ -360,7 +366,6 @@ func pickRunnable(jobs []*job, limit int) []*job {
 func (a *app) startJobLocked(j *job) {
 	w := &app{appShared: a.appShared, job: j, cfg: j.Cfg, itemOffset: j.Pos}
 	w.busy.Store(true)
-	w.logDir.Store(j.Output)
 	j.worker = w
 	j.State = jobRunning
 	j.Message = ""
@@ -587,6 +592,10 @@ func (a *app) setJobItem(index int, state, message string) {
 		a.job.Items[index].State = state
 		if message != "" || state == "running" {
 			a.job.Items[index].Msg = message
+			a.job.Items[index].Brief = ""
+			if state == "failed" {
+				a.job.Items[index].Brief = errorBrief(message)
+			}
 		}
 		if state == "done" || state == "failed" {
 			a.saveJobsLocked()

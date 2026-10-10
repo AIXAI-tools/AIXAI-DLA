@@ -199,11 +199,39 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .jobtag{font:600 11px var(--mono);color:var(--accent);margin-right:6px}
 .limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted)}
 .limit input{width:58px;height:30px;padding:0 6px}
+.field-h{display:flex;align-items:center;gap:4px;margin:0 0 6px}
+.field-h label.f{margin:0;flex:1}
+.menu-wrap{position:relative}
+.menu{position:absolute;right:0;top:calc(100% + 4px);min-width:190px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:8;display:none}
+.menu.open{display:block}
+.menu button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);padding:8px 10px;border-radius:6px;font:inherit;font-size:13.5px;cursor:pointer}
+.menu button:hover{background:var(--surface-3)}
+#dlgHistory{width:min(900px,96vw)}
+.hist-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.hist-bar input[type=search]{flex:1;min-width:180px}
+.hist-bar select{width:auto}
+.hist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.hist .empty{padding:20px 10px}
+.hrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);padding:8px 10px}
+.hrow.failed{border-left:3px solid var(--danger)}
+.hrow .t{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .u{font:12px var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .m{font-size:12px;color:var(--muted);margin-top:2px}
+.hrow .r{font-size:12px;color:var(--danger);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow .ra{display:flex;gap:4px}
+.muted{color:var(--muted);font-size:13px}
 .fails{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:8px}
 .fails .empty{padding:12px 10px}
 .fail{border:1px solid var(--border);border-left:3px solid var(--danger);border-radius:var(--radius-sm);background:var(--surface-2);padding:8px 10px}
 .fail .u{font:12.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fail .r{font-size:12.5px;color:var(--danger);margin-top:3px;white-space:pre-wrap;word-break:break-word;max-height:2.9em;overflow:hidden}
+.why{font-size:12.5px;color:var(--danger);font-weight:600;margin-top:3px}
+.raw{margin-top:2px}
+.raw summary{cursor:pointer;font-size:11.5px;color:var(--muted);list-style:none}
+.raw summary::-webkit-details-marker{display:none}
+.raw summary::before{content:"▸ "}
+.raw[open] summary::before{content:"▾ "}
+.raw pre{margin:4px 0 0;font:11.5px/1.5 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:9em;overflow:auto;background:var(--surface-3);border-radius:6px;padding:6px 8px}
 .fail .meta{font-size:11.5px;color:var(--muted);margin-top:3px}
 .fail .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .cnt{font:600 12px var(--mono);color:var(--danger);margin-left:6px}
@@ -297,7 +325,20 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
       <div class="card-h"><h2><span class="seal"></span>下載</h2></div>
       <div class="card-b">
         <div class="field">
-          <label class="f" for="urls">影片網址</label>
+          <div class="field-h">
+            <label class="f" for="urls">影片網址</label>
+            <button class="btn ghost sm" id="btnUrlCopy" title="複製網址欄的全部內容">複製</button>
+            <button class="btn ghost sm" id="btnUrlClear" title="清空網址欄（程式關閉前都可以復原）">清除</button>
+            <button class="btn ghost sm hidden" id="btnUrlUndo" title="找回上次清除的網址（目前網址欄的內容會保留在後面）">復原</button>
+            <div class="menu-wrap">
+              <button class="btn ghost sm" id="btnUrlMenu" aria-haspopup="true" aria-expanded="false">清單 ▾</button>
+              <div class="menu" id="urlMenu" role="menu">
+                <button data-m="history" role="menuitem">歷史下載清單…</button>
+                <button data-m="import" role="menuitem">匯入網址…（TXT／CSV）</button>
+                <button data-m="export" role="menuitem">匯出目前網址…</button>
+              </div>
+            </div>
+          </div>
           <textarea id="urls" spellcheck="false" placeholder="貼上網址，一行一個"></textarea>
           <div class="err-text" id="err-urls"></div>
         </div>
@@ -363,6 +404,10 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
               <label><input type="checkbox" id="noPlaylist"> 一般下載時避免誤抓整張播放清單</label>
               <label><input type="checkbox" id="playlistFolder"> 播放清單依名稱建立資料夾</label>
             </div>
+            <div class="field">
+              <label class="f" for="dataFolder">紀錄資料夾（下載紀錄、回報包）</label>
+              <div class="input-group"><input type="text" id="dataFolder" spellcheck="false"><button class="btn" id="btnDataPick">選擇</button><button class="btn" id="btnDataDefault" title="改回預設位置">預設</button></div>
+            </div>
             <div class="row">
               <button class="btn sm" id="btnResume">選擇未完成的檔案（接續下載）…</button>
               <span class="s" id="resumeInfo" style="font-size:12.5px;color:var(--muted)"></span>
@@ -413,6 +458,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           <div class="acts">
             <button class="btn ghost sm" id="btnCopyLog" title="複製完整紀錄（敏感資訊已遮蔽）">複製</button>
             <button class="btn ghost sm" id="btnOpenLog" title="開啟紀錄檔">紀錄檔</button>
+            <button class="btn ghost sm" id="btnDataFolder" title="開啟集中存放下載紀錄與回報包的資料夾">紀錄資料夾</button>
             <button class="btn ghost sm" id="btnClearLog" title="清除畫面（不影響紀錄檔）">清除</button>
           </div>
         </div>
@@ -421,6 +467,27 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
     </div>
   </main>
 </div>
+
+<!-- ================= history dialog ================= -->
+<dialog id="dlgHistory">
+  <div class="dlg-h"><h3>歷史下載清單</h3><span class="muted" id="histCount"></span><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <div class="hist-bar">
+      <input type="search" id="histQ" placeholder="搜尋網址或標題" spellcheck="false">
+      <select id="histF"><option value="">全部</option><option value="done">成功</option><option value="failed">失敗</option></select>
+      <label class="muted"><input type="checkbox" id="histAll"> 全選</label>
+    </div>
+    <ul class="hist" id="histList"></ul>
+  </div>
+  <div class="dlg-f">
+    <span class="muted" id="histSel" style="margin-right:auto;align-self:center"></span>
+    <button class="btn sm" id="histAdd" title="把選取的網址加到網址欄（不會自動開始下載）">加入網址欄</button>
+    <button class="btn sm" id="histCsv" title="匯出成 CSV，可用 Excel 開啟">匯出 CSV</button>
+    <button class="btn sm" id="histTxt" title="匯出成 TXT，一行一個網址">匯出 TXT</button>
+    <button class="btn sm" id="histDel">刪除所選</button>
+    <button class="btn sm danger" id="histClear">清除全部</button>
+  </div>
+</dialog>
 
 <!-- ================= update dialog ================= -->
 <dialog id="dlgUpdate">
@@ -555,7 +622,7 @@ function collect(){
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
     extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open,
-    maxJobs:+$("maxJobs").value||0
+    maxJobs:+$("maxJobs").value||0, dataFolder:$("dataFolder").value.trim()
   };
 }
 function saveSoon(){ clearTimeout(state.saveTimer); state.saveTimer=setTimeout(()=>window.goSaveSettings&&goSaveSettings(collect()),400); }
@@ -603,6 +670,7 @@ function fillForm(init){
   $("maxJobs").max=init.maxLimit||8; $("maxJobs").value=s.max_jobs||2;
   setJobs(init.jobs||[]);
   setFailed(init.failed||[]);
+  $("dataFolder").value=s.data_folder||""; $("dataFolder").placeholder=init.dataDefault||"";
   $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
     + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
     + `<br>按下後會在瀏覽器開啟已填好的回報頁，並開啟截圖所在資料夾，把圖片拖進去即可。`;
@@ -649,11 +717,11 @@ function renderJobs(){
       + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`
       + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
     const items=j.items.map((t,i)=>`<li class="task ${t.state}"><span class="ic">${icon[t.state]||"○"}</span>
-      <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.msg)}</div>`:""}</div>
+      <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.brief||t.msg)}</div>`:""}</div>
       <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span></li>`).join("");
     return `<li class="job ${j.state}">
       <div class="job-h"><span class="t" title="${esc(j.title)}">${esc(j.title)}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
-      ${line?`<div class="job-s">${esc(line)}</div>`:""}
+      ${j.state==="failed"&&j.brief?`<div class="job-s">${esc(j.brief)}</div><details class="raw"><summary>原始訊息</summary><pre>${esc(j.message||"")}</pre></details>`:(line?`<div class="job-s">${esc(line)}</div>`:"")}
       <div class="bar"><i style="width:${total?((done+failed+part)/total*100):0}%"></i></div>
       <div class="job-f">${btns}<details data-id="${j.id}" ${state.openJobs.has(j.id)?"open":""}><summary>項目（${total}）</summary><ul class="tasks">${items}</ul></details></div>
     </li>`;
@@ -675,6 +743,101 @@ function showBanner(kind,msg,acts){ const b=$("banner"); b.className="banner sho
 function hideBanner(){ $("banner").className="banner"; }
 function mkBtn(label,fn){ const b=document.createElement("button"); b.className="btn sm"; b.textContent=label; b.onclick=fn; return b; }
 
+/* Failure reason: a short Chinese line, with the original message kept below. */
+function reasonHTML(brief, raw){
+  raw=raw||""; if(!raw && !brief) return "";
+  if(!brief) return `<div class="why" title="${esc(raw)}">${esc(raw)}</div>`;
+  return `<div class="why">${esc(brief)}</div>`+(raw?`<details class="raw"><summary>原始訊息</summary><pre>${esc(raw)}</pre></details>`:"");
+}
+
+/* ---------------- address box tools ---------------- */
+function urlLines(){ return $("urls").value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean); }
+function appendUrls(list){
+  const have=new Set(urlLines()); const add=list.filter(u=>!have.has(u));
+  if(add.length){ const cur=$("urls").value.replace(/\s+$/,""); $("urls").value=(cur?cur+"\n":"")+add.join("\n")+"\n"; }
+  return add.length;
+}
+$("btnUrlCopy").onclick=async()=>{ const n=urlLines().length; if(!n){ toast("網址欄是空的"); return; } toast(await copyText($("urls").value.trim())?`已複製 ${n} 個網址`:"無法存取剪貼簿"); };
+// The last cleared content stays restorable until the program closes.
+let urlUndo="";
+$("btnUrlClear").onclick=()=>{
+  const old=$("urls").value; if(!old.trim()){ toast("網址欄已經是空的"); return; }
+  urlUndo=old; $("urls").value=""; fieldError(null); $("btnUrlUndo").classList.remove("hidden");
+  toast("已清除網址欄；需要時按「復原」找回（程式關閉前都有效）");
+};
+$("btnUrlUndo").onclick=()=>{
+  if(!urlUndo) return;
+  const now=urlLines(); $("urls").value=urlUndo; urlUndo=""; $("btnUrlUndo").classList.add("hidden");
+  const n=appendUrls(now); toast(n?`已復原，剛才另外輸入的 ${n} 個網址接在後面`:"已復原");
+};
+function closeUrlMenu(){ $("urlMenu").classList.remove("open"); $("btnUrlMenu").setAttribute("aria-expanded","false"); }
+$("btnUrlMenu").onclick=e=>{ e.stopPropagation(); const m=$("urlMenu"); const open=!m.classList.contains("open"); m.classList.toggle("open",open); $("btnUrlMenu").setAttribute("aria-expanded",String(open)); };
+document.addEventListener("click",e=>{ if(!e.target.closest(".menu-wrap")) closeUrlMenu(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeUrlMenu(); });
+$("urlMenu").onclick=async e=>{
+  const b=e.target.closest("button[data-m]"); if(!b) return; closeUrlMenu();
+  switch(b.dataset.m){
+    case "history": openHistory(); break;
+    case "import": { const r=await goImportURLs(); if(r.error){ toast(r.error); break; } if(!r.urls||!r.urls.length) break;
+      const n=appendUrls(r.urls); toast(n?`已加入 ${n} 個網址（${r.urls.length-n} 個已在網址欄）`:"這些網址都已經在網址欄了"); break; }
+    case "export": { const m=await goExportURLs($("urls").value); if(m) toast(m); break; }
+  }
+};
+
+/* ---------------- history ---------------- */
+const hist={list:[],sel:new Set()};
+const HIST_RENDER_MAX=800;
+function histFiltered(){
+  const q=$("histQ").value.trim().toLowerCase(), f=$("histF").value;
+  return hist.list.filter(h=>(!f||h.state===f)&&(!q||h.url.toLowerCase().includes(q)||(h.title||"").toLowerCase().includes(q)));
+}
+function renderHistory(){
+  const rows=histFiltered(); const ok=hist.list.filter(h=>h.state==="done").length;
+  $("histCount").textContent=hist.list.length?`共 ${hist.list.length} 筆（成功 ${ok}、失敗 ${hist.list.length-ok}）`:"";
+  const ids=new Set(hist.list.map(h=>h.id)); [...hist.sel].forEach(id=>{ if(!ids.has(id)) hist.sel.delete(id); });
+  $("histSel").textContent=hist.sel.size?`已選取 ${hist.sel.size} 筆`:(rows.length?`未選取：匯出會包含目前顯示的 ${rows.length} 筆`:"");
+  $("histAll").checked=rows.length>0&&rows.every(h=>hist.sel.has(h.id));
+  ["histAdd","histDel"].forEach(id=>$(id).disabled=!hist.sel.size);
+  ["histCsv","histTxt"].forEach(id=>$(id).disabled=!(hist.sel.size||rows.length));
+  $("histClear").disabled=!hist.list.length;
+  const ul=$("histList");
+  if(!rows.length){ ul.innerHTML=`<li class="empty">${hist.list.length?"沒有符合條件的紀錄。":"還沒有下載紀錄。每個網址下載完成或失敗後都會記在這裡。"}</li>`; return; }
+  ul.innerHTML=rows.slice(0,HIST_RENDER_MAX).map(h=>`<li class="hrow ${h.state}">
+    <input type="checkbox" data-id="${h.id}" ${hist.sel.has(h.id)?"checked":""} aria-label="選取">
+    <div style="min-width:0">
+      <div class="t" title="${esc(h.title||h.url)}">${esc(h.title||h.url)}</div>
+      ${h.title?`<div class="u" title="${esc(h.url)}">${esc(h.url)}</div>`:""}
+      <div class="m"><span class="badge ${h.state}">${h.state==="done"?"成功":"失敗"}</span> ${esc(h.time)}</div>
+      ${h.state==="failed"?reasonHTML(h.brief,h.reason):""}
+    </div>
+    <div class="ra">
+      ${h.state==="done"?`<button class="btn ghost sm" data-ha="reveal" data-id="${h.id}" title="在檔案總管中顯示">開啟位置</button>`:""}
+      <button class="btn ghost sm" data-ha="copy" data-id="${h.id}">複製網址</button>
+    </div></li>`).join("")+(rows.length>HIST_RENDER_MAX?`<li class="empty">只顯示前 ${HIST_RENDER_MAX} 筆，請用搜尋縮小範圍。</li>`:"");
+}
+async function loadHistory(){ hist.list=await goHistoryList()||[]; renderHistory(); }
+async function openHistory(){ hist.sel.clear(); $("histQ").value=""; $("histF").value=""; $("dlgHistory").showModal(); await loadHistory(); $("histQ").focus(); }
+function histTargetIds(){ return hist.sel.size?[...hist.sel]:histFiltered().map(h=>h.id); }
+$("histQ").oninput=renderHistory; $("histF").onchange=renderHistory;
+$("histAll").onchange=()=>{ const rows=histFiltered().slice(0,HIST_RENDER_MAX); if($("histAll").checked) rows.forEach(h=>hist.sel.add(h.id)); else rows.forEach(h=>hist.sel.delete(h.id)); renderHistory(); };
+$("histList").onchange=e=>{ const c=e.target.closest("input[data-id]"); if(!c) return; const id=+c.dataset.id; if(c.checked) hist.sel.add(id); else hist.sel.delete(id); renderHistory(); };
+$("histList").onclick=async e=>{
+  const b=e.target.closest("button[data-ha]"); if(!b) return; const h=hist.list.find(x=>x.id===+b.dataset.id); if(!h) return;
+  if(b.dataset.ha==="reveal"){ const m=await goHistoryReveal(h.id); if(m) toast(m); }
+  else toast(await copyText(h.url)?"已複製網址":"無法存取剪貼簿");
+};
+$("histAdd").onclick=()=>{ const urls=hist.list.filter(h=>hist.sel.has(h.id)).map(h=>h.url); const n=appendUrls([...new Set(urls)]); $("dlgHistory").close(); toast(n?`已加入 ${n} 個網址到網址欄，按「開始下載」即可下載`:"這些網址都已經在網址欄了"); };
+$("histCsv").onclick=async()=>{ const m=await goHistoryExport(histTargetIds(),"csv"); if(m) toast(m); };
+$("histTxt").onclick=async()=>{ const m=await goHistoryExport(histTargetIds(),"txt"); if(m) toast(m); };
+$("histDel").onclick=async()=>{ if(!hist.sel.size||!confirm(`從歷史清單刪除選取的 ${hist.sel.size} 筆？（已下載的檔案不受影響）`)) return; await goHistoryRemove([...hist.sel]); hist.sel.clear(); await loadHistory(); };
+$("histClear").onclick=async()=>{ if(!confirm(`清除全部 ${hist.list.length} 筆歷史紀錄？（已下載的檔案不受影響）建議先匯出備份。`)) return; await goHistoryRemove([]); hist.sel.clear(); await loadHistory(); };
+
+/* ---------------- data folder ---------------- */
+$("btnDataFolder").onclick=async()=>{ const e=await goOpenDataFolder(); if(e) toast(e); };
+$("btnDataPick").onclick=async()=>{ const p=await goPickFolder($("dataFolder").value||$("dataFolder").placeholder); if(p){ $("dataFolder").value=p; saveSoon(); toast("之後的下載紀錄與回報包會存到："+p); } };
+$("btnDataDefault").onclick=()=>{ $("dataFolder").value=""; saveSoon(); toast("已改回預設位置："+$("dataFolder").placeholder); };
+$("dataFolder").onchange=saveSoon;
+
 /* ---------------- failed addresses ---------------- */
 let failedList=[];
 function setFailed(list){
@@ -685,7 +848,7 @@ function setFailed(list){
   if(!n){ ul.innerHTML='<li class="empty">目前沒有。批次中有網址無法下載時會列在這裡，其他網址照常下載完成。</li>'; return; }
   ul.innerHTML=failedList.slice().reverse().map(f=>`<li class="fail">
     <div class="u" title="${esc(f.url)}">${esc(f.url)}</div>
-    <div class="r" title="${esc(f.reason)}">${esc(f.reason)}</div>
+    ${reasonHTML(f.brief,f.reason)}
     <div class="meta">任務 ${f.jobId} 第 ${f.item} 項 · ${esc(f.time)}${f.count>1?` · 已失敗 ${f.count} 次`:""}</div>
     <div class="acts">
       <button class="btn sm" data-fact="retry" data-id="${f.id}" title="用原本的下載設定，加入一個新任務重新下載">重試</button>
@@ -761,11 +924,12 @@ window.aixai={ on(name,p){
     case "job": mergeJob(p); renderJobs(); break;
     case "jobs": setJobs(p||[]); break;
     case "failed": setFailed(p||[]); break;
+    case "historyChanged": if($("dlgHistory").open) loadHistory(); break;
     case "jobRemoved": delete state.jobs[p.id]; renderJobs(); break;
     case "jobStatus": { const j=state.jobs[p.id]; if(j){ j.status=p.status; renderJobsSoon(); } break; }
     case "task": {
       const j=state.jobs[p.job]; const t=j&&j.items[p.index]; if(!t) break;
-      t.state=p.state; if(p.message) t.msg=p.message;
+      t.state=p.state; if(p.message){ t.msg=p.message; t.brief=p.brief||""; }
       if(p.state==="running"){ t.pct=null; t.msg=""; }
       renderJobsSoon(); break; }
     case "login":

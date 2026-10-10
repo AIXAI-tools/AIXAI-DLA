@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.3"
+	appVersion = "4.1.4"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -317,6 +317,8 @@ type settings struct {
 	DisclaimerAccepted string `json:"disclaimer_accepted"`
 	// MaxJobs is how many download tasks may run at the same time.
 	MaxJobs int `json:"max_jobs"`
+	// DataFolder holds run logs and report packs; empty = 文件\AIXAI 萬能下載工具.
+	DataFolder string `json:"data_folder,omitempty"`
 	// NoStartupUpdateCheck turns off the quiet update check at startup. Stored
 	// inverted so that settings files from older versions keep it enabled.
 	NoStartupUpdateCheck bool `json:"no_startup_update_check"`
@@ -526,6 +528,14 @@ type appShared struct {
 	failed         []failedEntry
 	failedNextID   int
 	loadFailedOnce sync.Once
+
+	// Download history (history.go) and the folder of logs and report packs
+	// (datadir.go).
+	historyMu       sync.Mutex
+	history         []historyEntry
+	historyNextID   int
+	loadHistoryOnce sync.Once
+	dataFolderPref  atomic.Value
 }
 
 type app struct {
@@ -548,7 +558,8 @@ type app struct {
 	lastRunLog   string // file of the running or most recent task
 	// runPos is the index of the item the running task is on.
 	runPos atomic.Int32
-	logDir atomic.Value
+	// itemFiles are the checked files of the current item (download history).
+	itemFiles []string
 
 	// captureStartFailed stops a batch when the capture browser cannot be
 	// started; loginCancelled stops it when the user closes the login window.
@@ -1085,6 +1096,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		a.lastYtArgs, a.lastYtFiles = nil, nil
 		a.curItem = i
 		a.resetOutputs()
+		a.itemFiles = nil
 		a.diagStartItem(i, len(urls), rawURL)
 
 		// These URL families are currently known to fall through yt-dlp's generic
@@ -4072,6 +4084,7 @@ func (a *app) loadSettings() {
 	a.cfg.MaxJobs = clampMaxJobs(a.cfg.MaxJobs)
 	a.maxJobs.Store(int32(a.cfg.MaxJobs))
 	a.capturePref.Store(a.cfg.CaptureBrowser)
+	a.setDataFolderPref(a.cfg.DataFolder)
 }
 
 func downloadFile(ctx context.Context, url, dest, label string, logFn func(string), statusFn func(string)) error {

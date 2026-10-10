@@ -145,6 +145,38 @@ func (a *app) openFileDialog(title, initialDir string, multi bool, filterPairs .
 	return out
 }
 
+const OFN_OVERWRITEPROMPT = 0x00000002
+
+var procGetSaveFileNameW = comdlg32.NewProc("GetSaveFileNameW")
+
+// saveFileDialog shows the standard Save As dialog; "" when cancelled.
+func (a *app) saveFileDialog(title, initialDir, fileName, defExt string, filterPairs ...string) string {
+	fileBuf := make([]uint16, 32768)
+	copy(fileBuf, syscall.StringToUTF16(fileName))
+	filter := multiString(filterPairs...)
+	var initialPtr *uint16
+	if strings.TrimSpace(initialDir) != "" {
+		initialPtr = utf16Ptr(initialDir)
+	}
+	ofn := openFileName{
+		LStructSize:     uint32(unsafe.Sizeof(openFileName{})),
+		HwndOwner:       a.hwnd,
+		HInstance:       a.hInstance,
+		LpstrFilter:     &filter[0],
+		NFilterIndex:    1,
+		LpstrFile:       &fileBuf[0],
+		NMaxFile:        uint32(len(fileBuf)),
+		LpstrInitialDir: initialPtr,
+		LpstrTitle:      utf16Ptr(title),
+		LpstrDefExt:     utf16Ptr(defExt),
+		Flags:           OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_EXPLORER | OFN_HIDEREADONLY,
+	}
+	if ok, _, _ := procGetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn))); ok == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(fileBuf)
+}
+
 func (a *app) pickCookieFile() string {
 	files := a.openFileDialog("選擇 Netscape 格式 cookies.txt", "", false, "Cookie 文字檔 (*.txt)", "*.txt", "所有檔案 (*.*)", "*.*")
 	if len(files) == 0 {

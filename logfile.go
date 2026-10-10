@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	// Each press of 開始下載 gets its own file in this subfolder of the download
-	// folder, so a report only carries the run it is about.
-	runLogDirName  = "AIXAI_下載紀錄"
+	// Each press of 開始下載 gets its own file (in the data folder, by month:
+	// datadir.go), so a report only carries the run it is about.
 	runLogPrefix   = "AIXAI_下載紀錄_"
-	appLogFileName = "AIXAI_程式紀錄.txt" // messages outside a run, in the app data folder
+	appLogFileName = "AIXAI_程式紀錄.txt" // messages outside a run, in the data folder
 
 	maxLogFileBytes    = 20 << 20 // rotate the on-disk log at ~20 MiB
 	maxSessionLogBytes = 8 << 20  // in-memory copy kept for the 複製 Log button
@@ -82,23 +81,10 @@ func (a *app) sessionLogText() string {
 	return strings.Join(a.sessionLog, "")
 }
 
-// logFileDir is the run-log folder inside the current download folder; it
-// falls back to the app data folder when that folder cannot be created.
-func (a *app) logFileDir() string {
-	dir, _ := a.logDir.Load().(string)
-	if dir = strings.TrimSpace(dir); dir != "" {
-		dir = filepath.Join(dir, runLogDirName)
-		if os.MkdirAll(dir, 0755) == nil {
-			return dir
-		}
-	}
-	return a.appDir
-}
-
 // beginRunLog starts a new log file for one press of 開始下載 and clears the
 // in-memory copy, so 複製 Log and the file both hold only this run.
 func (a *app) beginRunLog(started time.Time) {
-	dir := a.logFileDir()
+	dir := a.runLogsDir(started) // datadir.go: one folder for every run log
 	base := runLogPrefix + started.Format("20060102_150405")
 	path := filepath.Join(dir, base+".txt")
 	for n := 2; n < 100; n++ {
@@ -130,10 +116,6 @@ func (a *app) latestRunLog() string {
 	return a.lastRunLog
 }
 
-// setLogDir is called from the UI thread whenever the download folder is
-// (re)applied; workers only ever read the value atomically.
-func (a *app) setLogDir(dir string) { a.logDir.Store(strings.TrimSpace(dir)) }
-
 func (a *app) writeLogFile(s string) {
 	var b strings.Builder
 	stamp := time.Now().Format("2006-01-02 15:04:05")
@@ -157,10 +139,11 @@ func (a *app) writeLogFile(s string) {
 		if a.appDir == "" {
 			return // no data folder (unit tests): never write into the working directory
 		}
-		path = filepath.Join(a.appDir, appLogFileName)
+		dir := a.dataFolder()
+		path = filepath.Join(dir, appLogFileName)
 		if st, err := os.Stat(path); err == nil && st.Size() > maxLogFileBytes {
 			// Keep the old log under a dated name instead of discarding it.
-			archived := filepath.Join(a.appDir, "AIXAI_程式紀錄_"+time.Now().Format("20060102_150405")+".txt")
+			archived := filepath.Join(dir, "AIXAI_程式紀錄_"+time.Now().Format("20060102_150405")+".txt")
 			_ = os.Rename(path, archived)
 		}
 	}

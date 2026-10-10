@@ -331,7 +331,10 @@ func (a *app) buildReportPack(id int) (string, string, error) {
 	b.WriteString(strings.Join(tail, "\r\n") + "\r\n")
 	text := privacyScrub(b.String())
 
-	dir := filepath.Dir(logPath)
+	dir := a.dataSubdir(reportsSubdir)
+	if dir == "" {
+		dir = filepath.Dir(logPath)
+	}
 	path := filepath.Join(dir, fmt.Sprintf("%s%d_%s.txt", reportPrefix, id, time.Now().Format("20060102_150405")))
 	if err := os.WriteFile(path, []byte("\uFEFF"+text), 0644); err != nil {
 		return "", text, fmt.Errorf("寫入回報包失敗：%v", err)
