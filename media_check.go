@@ -446,6 +446,12 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 			a.seqHashes[sum] = seqFile{item: a.curItem, path: path}
 		}
 	}
+	paths := make([]string, len(passed))
+	infos := make([]mediaInfo, len(passed))
+	for i, c := range passed {
+		paths[i], infos[i] = c.path, c.info
+	}
+	a.makePlayable(ctx, paths, infos, mode, cfg) // compat.go
 	return nil
 }
 

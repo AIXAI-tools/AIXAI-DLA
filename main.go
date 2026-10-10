@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.1"
+	appVersion = "4.1.2"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -364,7 +364,7 @@ func (e *batchPartialError) Error() string {
 	if len(e.Failures) > len(preview) {
 		extra = fmt.Sprintf("\n…另有 %d 項", len(e.Failures)-len(preview))
 	}
-	return fmt.Sprintf("連續序號下載已處理完畢，但有 %d 項失敗。\n%s%s", len(e.Failures), strings.Join(preview, "\n"), extra)
+	return fmt.Sprintf("全部項目已處理完畢，但有 %d 項失敗。\n%s%s", len(e.Failures), strings.Join(preview, "\n"), extra)
 }
 
 type parameterPreset struct {
@@ -520,6 +520,12 @@ type appShared struct {
 	jobs         []*job
 	loadJobsOnce sync.Once
 	nextJobID    int
+
+	// Addresses that could not be downloaded (failed.go).
+	failedMu       sync.Mutex
+	failed         []failedEntry
+	failedNextID   int
+	loadFailedOnce sync.Once
 }
 
 type app struct {
@@ -1133,14 +1139,15 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			if a.loginCancelled.Load() {
 				return &commandRunError{Cause: err, Summary: "已關閉登入視窗、取消登入，因此停止整批下載。需要時重新按「開始下載」即可再次登入。"}
 			}
-			if cfg.Sequence {
-				msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
-				batchFailures = append(batchFailures, msg)
-				a.postLog("⚠ " + msg + "；連續序號模式會跳過此集並繼續下一集。\r\n")
+			if len(urls) == 1 {
 				a.emitTask(i, "failed", firstLine(err.Error()))
-				continue
+				return fmt.Errorf("第 %d 個任務失敗：%w", i+1, err)
 			}
-			return fmt.Errorf("第 %d 個任務失敗：%w", i+1, err)
+			msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
+			batchFailures = append(batchFailures, msg)
+			a.postLog("⚠ " + msg + "；跳過此項，繼續下一項。\r\n")
+			a.emitTask(i, "failed", firstLine(err.Error()))
+			continue
 		}
 
 		// yt-dlp already reported this site unsupported earlier in the run
@@ -1255,6 +1262,36 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// yt-dlp intentionally does not support every website. When it reports
 		// Unsupported URL after the normal update/retry flow, automatically
 		// switch to AIXAI's fallback chain instead of failing immediately.
+		// Some posts of a site only open for a signed-in account, which yt-dlp
+		// reports as a page it cannot read: retry once with the sign-in kept in
+		// the dedicated capture browser (site_login.go).
+		if !a.stopRequested.Load() && site == "" && wantsCaptureLogin(rawURL, err, cfg) {
+			loginErr := a.retryWithCaptureLogin(ctx, rawURL, mode, formatID, output, cfg)
+			a.diagRecord("專用瀏覽器登入重試", loginErr)
+			switch {
+			case loginErr == nil:
+				a.postLog("✓ 使用登入狀態下載成功。\r\n")
+				err = nil
+			case errors.Is(loginErr, errLoginCancelled):
+				err = loginErr
+			case a.stopRequested.Load():
+			default:
+				a.postLog("⚠ 使用登入狀態仍無法下載：" + firstLine(loginErr.Error()) + "\r\n")
+			}
+		}
+		// A site yt-dlp knows but whose page it could not read this time (one
+		// video of the site, or after a site change) gets the same fallback
+		// chain; the site itself stays marked as supported for later items.
+		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && isExtractorFailure(err) {
+			a.postLog("⚠ yt-dlp 無法解析此頁面，改用 AIXAI 多引擎備援流程。\r\n")
+			a.postStatus("狀態：yt-dlp 無法解析此頁面，正在嘗試備援解析…")
+			if fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg); fallbackErr == nil {
+				err = nil
+				a.postLog("✓ 備援流程處理成功。\r\n")
+			} else {
+				err = &commandRunError{Cause: fallbackErr, Summary: "yt-dlp 無法解析此頁面，備援流程也未成功。\n\nyt-dlp：" + firstLine(err.Error()) + "\n備援：" + firstLine(fallbackErr.Error()) + "\n\n常見原因：影片已刪除或設為不公開、需要登入才能觀看，或網站改版。"}
+			}
+		}
 		if err != nil && !a.stopRequested.Load() && isUnsupportedURL(err) {
 			if site == "" && host != "" && unsupportedHosts[host] {
 				// Already explained for an earlier item of this run.
@@ -1306,14 +1343,17 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			if a.loginCancelled.Load() {
 				return &commandRunError{Cause: err, Summary: "已關閉登入視窗、取消登入，因此停止整批下載。需要時重新按「開始下載」即可再次登入。"}
 			}
-			if cfg.Sequence {
-				msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
-				batchFailures = append(batchFailures, msg)
-				a.postLog("⚠ " + msg + "；連續序號模式會跳過此集並繼續下一集。\r\n")
+			// One bad address must not hold back the rest of the batch (繼續
+			// would otherwise restart at the same failing item every time).
+			if len(urls) == 1 {
 				a.emitTask(i, "failed", firstLine(err.Error()))
-				continue
+				return fmt.Errorf("第 %d 個任務失敗：%w", i+1, err)
 			}
-			return fmt.Errorf("第 %d 個任務失敗：%w", i+1, err)
+			msg := fmt.Sprintf("第 %d/%d 項失敗：%s", i+1, len(urls), firstLine(err.Error()))
+			batchFailures = append(batchFailures, msg)
+			a.postLog("⚠ " + msg + "；跳過此項，繼續下一項。\r\n")
+			a.emitTask(i, "failed", firstLine(err.Error()))
+			continue
 		}
 		a.postLog("✓ 本項任務完成。\r\n")
 		a.emitTask(i, "done", "")
@@ -1352,6 +1392,25 @@ func isCookieAccessFailure(err error) bool {
 		"could not copy chrome cookie database", "permission denied", "failed to decrypt",
 		"could not decrypt", "cookie database", "cookies could not be decrypted",
 		"no such table: meta", "browser cookies",
+	}
+	for _, needle := range needles {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExtractorFailure reports a yt-dlp error where the site's extractor ran
+// but could not read the page, as opposed to a network, login or file error.
+func isExtractorFailure(err error) bool {
+	if err == nil || isAuthenticationRequired(err) || errors.Is(err, errStopped) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	needles := []string{
+		"cannot parse data", "unable to extract", "no video formats found",
+		"unable to download json metadata", "unable to parse",
 	}
 	for _, needle := range needles {
 		if strings.Contains(lower, needle) {

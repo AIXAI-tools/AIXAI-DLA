@@ -199,6 +199,15 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .jobtag{font:600 11px var(--mono);color:var(--accent);margin-right:6px}
 .limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted)}
 .limit input{width:58px;height:30px;padding:0 6px}
+.fails{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.fails .empty{padding:12px 10px}
+.fail{border:1px solid var(--border);border-left:3px solid var(--danger);border-radius:var(--radius-sm);background:var(--surface-2);padding:8px 10px}
+.fail .u{font:12.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fail .r{font-size:12.5px;color:var(--danger);margin-top:3px;white-space:pre-wrap;word-break:break-word;max-height:2.9em;overflow:hidden}
+.fail .meta{font-size:11.5px;color:var(--muted);margin-top:3px}
+.fail .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.cnt{font:600 12px var(--mono);color:var(--danger);margin-left:6px}
+.cnt:empty{display:none}
 .banner{display:none;margin-top:12px;padding:10px 12px;border-radius:var(--radius-sm);font-size:13.5px;white-space:pre-wrap;word-break:break-word}
 .banner.show{display:block}
 .banner.ok{background:var(--ok-soft);color:var(--ok)}
@@ -388,6 +397,16 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           <ul class="jobs" id="jobs"><li class="empty">尚無任務。貼上網址後按「開始下載」；下載中也可以繼續加入新任務。</li></ul>
           <div class="banner" id="banner"></div>
         </div>
+      </section>
+      <section class="card" id="failCard">
+        <div class="card-h"><h2><span class="seal"></span>無法下載的網址<span class="cnt" id="failCount"></span></h2>
+          <div class="acts">
+            <button class="btn ghost sm" id="btnFailRetryAll" title="把清單中的網址全部加入一個新任務重新下載">全部重試</button>
+            <button class="btn ghost sm" id="btnFailCopyAll" title="複製清單中的所有網址（一行一個）">全部複製</button>
+            <button class="btn ghost sm" id="btnFailClear" title="清空清單（不影響已下載的檔案）">清除清單</button>
+          </div>
+        </div>
+        <div class="card-b"><ul class="fails" id="fails"></ul></div>
       </section>
       <section class="card">
         <div class="card-h"><h2><span class="seal"></span>紀錄</h2>
@@ -583,6 +602,7 @@ function fillForm(init){
   $("adv").open=!!s.advanced_open;
   $("maxJobs").max=init.maxLimit||8; $("maxJobs").value=s.max_jobs||2;
   setJobs(init.jobs||[]);
+  setFailed(init.failed||[]);
   $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
     + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
     + `<br>按下後會在瀏覽器開啟已填好的回報頁，並開啟截圖所在資料夾，把圖片拖進去即可。`;
@@ -655,6 +675,44 @@ function showBanner(kind,msg,acts){ const b=$("banner"); b.className="banner sho
 function hideBanner(){ $("banner").className="banner"; }
 function mkBtn(label,fn){ const b=document.createElement("button"); b.className="btn sm"; b.textContent=label; b.onclick=fn; return b; }
 
+/* ---------------- failed addresses ---------------- */
+let failedList=[];
+function setFailed(list){
+  failedList=list||[];
+  const ul=$("fails"), n=failedList.length;
+  $("failCount").textContent=n?String(n):"";
+  ["btnFailRetryAll","btnFailCopyAll","btnFailClear"].forEach(id=>$(id).disabled=!n);
+  if(!n){ ul.innerHTML='<li class="empty">目前沒有。批次中有網址無法下載時會列在這裡，其他網址照常下載完成。</li>'; return; }
+  ul.innerHTML=failedList.slice().reverse().map(f=>`<li class="fail">
+    <div class="u" title="${esc(f.url)}">${esc(f.url)}</div>
+    <div class="r" title="${esc(f.reason)}">${esc(f.reason)}</div>
+    <div class="meta">任務 ${f.jobId} 第 ${f.item} 項 · ${esc(f.time)}${f.count>1?` · 已失敗 ${f.count} 次`:""}</div>
+    <div class="acts">
+      <button class="btn sm" data-fact="retry" data-id="${f.id}" title="用原本的下載設定，加入一個新任務重新下載">重試</button>
+      <button class="btn ghost sm" data-fact="copy" data-id="${f.id}">複製網址</button>
+      <button class="btn ghost sm" data-fact="open" data-id="${f.id}" title="在瀏覽器開啟，確認影片是否還在、是否需要登入">在瀏覽器開啟</button>
+      <button class="btn ghost sm" data-fact="remove" data-id="${f.id}">從清單移除</button>
+    </div></li>`).join("");
+}
+async function copyText(text){
+  try{ await navigator.clipboard.writeText(text); return true; }catch(e){}
+  const t=document.createElement("textarea"); t.value=text; document.body.appendChild(t); t.select();
+  let ok=false; try{ ok=document.execCommand("copy"); }catch(e){} t.remove(); return ok;
+}
+$("fails").onclick=async e=>{
+  const b=e.target.closest("button[data-fact]"); if(!b) return;
+  const id=+b.dataset.id, f=failedList.find(x=>x.id===id); if(!f) return;
+  switch(b.dataset.fact){
+    case "retry": { const err=await goFailedRetry([id]); toast(err||"已加入新任務重新下載；成功後會自動從清單移除。"); break; }
+    case "copy": toast(await copyText(f.url)?"已複製網址":"無法存取剪貼簿"); break;
+    case "open": if(/^https:\/\//i.test(f.url)) goOpenURL(f.url); else toast("只能開啟 https:// 開頭的網址"); break;
+    case "remove": goFailedRemove([id]); break;
+  }
+};
+$("btnFailRetryAll").onclick=async()=>{ if(!failedList.length) return; const err=await goFailedRetry([]); toast(err||`已把 ${failedList.length} 個網址加入新任務重新下載。`); };
+$("btnFailCopyAll").onclick=async()=>{ if(!failedList.length) return; toast(await copyText(failedList.map(f=>f.url).join("\n"))?`已複製 ${failedList.length} 個網址`:"無法存取剪貼簿"); };
+$("btnFailClear").onclick=()=>{ if(failedList.length && confirm(`清除「無法下載的網址」清單中的 ${failedList.length} 筆？已下載的檔案不受影響。`)) goFailedRemove([]); };
+
 /* ---------------- log ---------------- */
 const LOG_MAX=3000;
 function classify(line){
@@ -702,6 +760,7 @@ window.aixai={ on(name,p){
     case "env": $("env").textContent=p; break;
     case "job": mergeJob(p); renderJobs(); break;
     case "jobs": setJobs(p||[]); break;
+    case "failed": setFailed(p||[]); break;
     case "jobRemoved": delete state.jobs[p.id]; renderJobs(); break;
     case "jobStatus": { const j=state.jobs[p.id]; if(j){ j.status=p.status; renderJobsSoon(); } break; }
     case "task": {

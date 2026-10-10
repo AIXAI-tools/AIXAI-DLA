@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -177,5 +178,20 @@ func TestPageEpisodeOutputName(t *testing.T) {
 	}
 	if got := capturedOutputBase("https://x/play/16465/3", pageEpisodeTitle("https://x/play/16465/3", body)); got != "Some Show 第 3 集 - Site_E003" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestIsExtractorFailure(t *testing.T) {
+	cases := map[string]bool{
+		"ERROR: [facebook] 123: Cannot parse data; please report this issue": true,
+		"ERROR: [generic] Unable to extract video url":                       true,
+		"ERROR: Unsupported URL: https://example.com/":                       false,
+		"ERROR: [facebook] 123: login required":                              false,
+		"ERROR: unable to download video data: HTTP Error 403: Forbidden":    false,
+	}
+	for msg, want := range cases {
+		if got := isExtractorFailure(errors.New(msg)); got != want {
+			t.Errorf("isExtractorFailure(%q) = %v, want %v", msg, got, want)
+		}
 	}
 }

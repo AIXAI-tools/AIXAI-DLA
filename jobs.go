@@ -425,7 +425,7 @@ func (a *app) finishJob(j *job, w *app, err error) {
 		if errors.As(err, &partial) {
 			j.State, j.Pos = jobPartial, len(j.URLs)
 			j.Message = fmt.Sprintf("完成，%d 項失敗；成功的項目已保留。", len(partial.Failures))
-			final = "=== 連續下載完成（部分項目失敗）===\r\n" + err.Error()
+			final = "=== 下載完成（部分項目失敗）===\r\n" + err.Error()
 		} else {
 			j.State, j.Pos = jobFailed, pos
 			j.Message = err.Error()

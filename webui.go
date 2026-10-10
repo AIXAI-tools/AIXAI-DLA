@@ -175,6 +175,7 @@ func (a *app) emitTask(index int, state, message string) {
 	}
 	index += a.itemOffset
 	a.setJobItem(index, state, message)
+	a.noteItemResult(index, state, message)
 	a.emit("task", map[string]interface{}{"job": a.job.ID, "index": index, "state": state, "message": message})
 }
 
@@ -281,18 +282,19 @@ type uiOption struct {
 }
 
 type uiInit struct {
-	Version  string     `json:"version"`
-	Title    string     `json:"title"`
-	Settings settings   `json:"settings"`
-	Modes    []uiOption `json:"modes"`
-	Logins   []uiOption `json:"logins"`
-	Browsers []uiOption `json:"browsers"`
-	Presets  []uiOption `json:"presets"`
-	Repo     string     `json:"repo"`
-	Email    string     `json:"email"`
-	LogFile  string     `json:"logFile"`
-	Jobs     []jobView  `json:"jobs"`
-	MaxLimit int        `json:"maxLimit"`
+	Version  string       `json:"version"`
+	Title    string       `json:"title"`
+	Settings settings     `json:"settings"`
+	Modes    []uiOption   `json:"modes"`
+	Logins   []uiOption   `json:"logins"`
+	Browsers []uiOption   `json:"browsers"`
+	Presets  []uiOption   `json:"presets"`
+	Repo     string       `json:"repo"`
+	Email    string       `json:"email"`
+	LogFile  string       `json:"logFile"`
+	Jobs     []jobView    `json:"jobs"`
+	Failed   []failedView `json:"failed"`
+	MaxLimit int          `json:"maxLimit"`
 }
 
 type startRequest struct {
@@ -354,12 +356,14 @@ func (a *app) bindUI() {
 		}
 		a.initializeLocalState()
 		a.loadJobsOnce.Do(a.loadJobs)
-		return uiInit{Jobs: a.jobViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
+		return uiInit{Jobs: a.jobViews(), Failed: a.failedViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
 			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, LogFile: filepath.Join(a.cfg.OutputFolder, runLogDirName)}
 	})
 	_ = w.Bind("goStart", a.startFromUI)
 	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
 	_ = w.Bind("goClearFinished", func() { a.clearFinishedJobs() })
+	_ = w.Bind("goFailedRetry", func(ids []int) string { return a.retryFailed(ids) })
+	_ = w.Bind("goFailedRemove", func(ids []int) { a.removeFailed(ids) })
 	_ = w.Bind("goSaveSettings", func(req startRequest) {
 		a.applyRequestToSettings(req)
 		a.saveSettings()
