@@ -37,7 +37,23 @@ func (v streamVariant) shortSide() int {
 	return v.Width
 }
 
-func (v streamVariant) pixels() int { return v.Width * v.Height }
+// sizeText is "720×1280", or "1080p" when only the "p" value is known.
+func (v streamVariant) sizeText() string {
+	if v.Width > 0 && v.Height > 0 {
+		return strconv.Itoa(v.Width) + "×" + strconv.Itoa(v.Height)
+	}
+	return strconv.Itoa(v.shortSide()) + "p"
+}
+
+// pixels is the picture area; a rendition known only by its "p" value
+// ("1080p" with no width/height) is counted as 16:9.
+func (v streamVariant) pixels() int {
+	if v.Width > 0 && v.Height > 0 {
+		return v.Width * v.Height
+	}
+	s := v.shortSide()
+	return s * s * 16 / 9
+}
 
 func (v streamVariant) isH264() bool {
 	c := strings.ToLower(v.Codec)

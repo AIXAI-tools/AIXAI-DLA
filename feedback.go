@@ -3,12 +3,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"image"
-	"image/png"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,7 +13,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -25,8 +21,8 @@ import (
 //
 // Channel: GitHub Issues on the project repository (public, trackable, tied
 // to versions). The app pre-fills the issue (title, description, diagnostics)
-// and opens it in the browser; screenshots are saved to one folder that is
-// opened next to it so the user can drag them into the issue. Uploading
+// and opens it in the browser; screenshots and log copies are saved to one
+// folder that is opened next to it so the user can drag them into the issue. Uploading
 // images to GitHub requires the user's own login, so the app never uploads
 // anything itself and holds no tokens.
 // Optional e-mail channel: set feedbackEmail to a dedicated address.
@@ -48,88 +44,18 @@ type feedbackRequest struct {
 	Contact     string   `json:"contact"`
 	IncludeDiag bool     `json:"includeDiag"`
 	Images      []string `json:"images"`
-	Channel     string   `json:"channel"` // github | email | copy
+	Logs        []string `json:"logs"`    // scrubbed log copies (feedback_snip.go)
+	Channel     string   `json:"channel"` // send | github | email | copy
 }
 
 type feedbackResult struct {
 	Message string `json:"message"`
 }
 
-var (
-	procGetDC                  = user32.NewProc("GetDC")
-	procReleaseDC              = user32.NewProc("ReleaseDC")
-	procPrintWindow            = user32.NewProc("PrintWindow")
-	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
-	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
-	procSelectObject           = gdi32.NewProc("SelectObject")
-	procDeleteDC               = gdi32.NewProc("DeleteDC")
-	procGetDIBits              = gdi32.NewProc("GetDIBits")
-)
-
-type bitmapInfoHeader struct {
-	Size          uint32
-	Width         int32
-	Height        int32
-	Planes        uint16
-	BitCount      uint16
-	Compression   uint32
-	SizeImage     uint32
-	XPelsPerMeter int32
-	YPelsPerMeter int32
-	ClrUsed       uint32
-	ClrImportant  uint32
-}
-
 func (a *app) feedbackDir() string {
 	dir := filepath.Join(a.appDir, "feedback")
 	_ = os.MkdirAll(dir, 0755)
 	return dir
-}
-
-// captureWindowScreenshot renders the app window (including WebView2 content)
-// into a PNG in the feedback folder.
-func (a *app) captureWindowScreenshot() (feedbackImage, error) {
-	var r rect
-	procGetWindowRect.Call(a.hwnd, uintptr(unsafe.Pointer(&r)))
-	w, h := int(r.Right-r.Left), int(r.Bottom-r.Top)
-	if w <= 0 || h <= 0 {
-		return feedbackImage{}, errors.New("視窗目前不可見，無法截圖")
-	}
-	screenDC, _, _ := procGetDC.Call(0)
-	defer procReleaseDC.Call(0, screenDC)
-	memDC, _, _ := procCreateCompatibleDC.Call(screenDC)
-	defer procDeleteDC.Call(memDC)
-	bmp, _, _ := procCreateCompatibleBitmap.Call(screenDC, uintptr(w), uintptr(h))
-	if bmp == 0 {
-		return feedbackImage{}, errors.New("無法建立截圖緩衝區")
-	}
-	defer procDeleteObject.Call(bmp)
-	old, _, _ := procSelectObject.Call(memDC, bmp)
-	procPrintWindow.Call(a.hwnd, memDC, 2) // PW_RENDERFULLCONTENT
-	procSelectObject.Call(memDC, old)
-
-	hdr := bitmapInfoHeader{Size: uint32(unsafe.Sizeof(bitmapInfoHeader{})), Width: int32(w), Height: -int32(h), Planes: 1, BitCount: 32}
-	pix := make([]byte, w*h*4)
-	if n, _, _ := procGetDIBits.Call(memDC, bmp, 0, uintptr(h), uintptr(unsafe.Pointer(&pix[0])), uintptr(unsafe.Pointer(&hdr)), 0); n == 0 {
-		return feedbackImage{}, errors.New("讀取截圖像素失敗")
-	}
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for i := 0; i < w*h; i++ { // BGRA -> RGBA, opaque
-		img.Pix[i*4+0] = pix[i*4+2]
-		img.Pix[i*4+1] = pix[i*4+1]
-		img.Pix[i*4+2] = pix[i*4+0]
-		img.Pix[i*4+3] = 255
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return feedbackImage{}, err
-	}
-	name := "AIXAI_回報截圖_" + time.Now().Format("20060102_150405") + ".png"
-	path := filepath.Join(a.feedbackDir(), name)
-	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
-		return feedbackImage{}, err
-	}
-	return feedbackImage{Path: path, Name: name, DataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
 }
 
 // pickFeedbackImages lets the user add existing screenshots; copies go into
@@ -213,6 +139,13 @@ func (a *app) buildFeedbackReport(fb feedbackRequest) (title, body string) {
 	if len(fb.Images) > 0 {
 		b.WriteString(fmt.Sprintf("### 截圖\n\n（%d 張，請將 AIXAI 開啟的資料夾中的圖片拖曳到這裡）\n\n", len(fb.Images)))
 	}
+	if len(fb.Logs) > 0 {
+		var names []string
+		for _, l := range fb.Logs {
+			names = append(names, filepath.Base(l))
+		}
+		b.WriteString(fmt.Sprintf("### 紀錄檔\n\n%s（請將 AIXAI 開啟的資料夾中的這些檔案拖曳到這裡；已遮蔽敏感資訊）\n\n", strings.Join(names, "、")))
+	}
 	if fb.IncludeDiag {
 		b.WriteString("### 診斷資訊\n\n")
 		b.WriteString(fmt.Sprintf("- 版本：%s v%s\n- 系統：%s\n", appTitle, appVersion, windowsVersionString()))
@@ -268,11 +201,21 @@ func (a *app) submitFeedback(fb feedbackRequest) (feedbackResult, error) {
 	}
 	title, body := a.buildFeedbackReport(fb)
 	full := "# " + title + "\n\n" + body
+	attachments := append(append([]string(nil), fb.Images...), fb.Logs...)
+	if fb.Channel == "send" {
+		if err := a.sendFeedbackDirect(title, body, attachments); err != nil {
+			if setClipboardText(a.hwnd, full) == nil {
+				return feedbackResult{}, errors.New(err.Error() + "（回報內容已複製到剪貼簿，可改用其他方式貼上）")
+			}
+			return feedbackResult{}, err
+		}
+		return feedbackResult{Message: "已送出，謝謝你的回報！"}, nil
+	}
 	_ = setClipboardText(a.hwnd, full) // always available as a fallback
 
 	showImages := func() {
-		if len(fb.Images) > 0 {
-			openExplorerSelecting(fb.Images[0])
+		if len(attachments) > 0 {
+			openExplorerSelecting(attachments[0])
 		}
 	}
 	switch fb.Channel {
@@ -291,8 +234,8 @@ func (a *app) submitFeedback(fb feedbackRequest) (feedbackResult, error) {
 		openInBrowser(mail)
 		showImages()
 		msg := "已開啟郵件程式（收件人：" + feedbackEmail + "）。完整內容也已複製到剪貼簿；若沒有跳出郵件程式，可改用 Gmail 等網頁信箱，貼上內容寄到上述地址。"
-		if len(fb.Images) > 0 {
-			msg += "截圖所在資料夾已開啟，請把圖片加到郵件附件。"
+		if len(attachments) > 0 {
+			msg += "附件（截圖／紀錄檔）所在資料夾已開啟，請把檔案加到郵件附件。"
 		}
 		return feedbackResult{Message: msg}, nil
 	default: // github
@@ -315,8 +258,8 @@ func (a *app) submitFeedback(fb feedbackRequest) (feedbackResult, error) {
 		openInBrowser(issueURL)
 		showImages()
 		msg := "已在瀏覽器開啟 GitHub 回報頁（需登入 GitHub）。確認內容後按「Submit new issue」即可送出。"
-		if len(fb.Images) > 0 {
-			msg += "截圖所在資料夾已開啟，請把圖片拖曳到回報內容中。"
+		if len(attachments) > 0 {
+			msg += "附件（截圖／紀錄檔）所在資料夾已開啟，請把檔案拖曳到回報內容中。"
 		}
 		return feedbackResult{Message: msg}, nil
 	}

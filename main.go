@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.5"
+	appVersion = "4.1.6"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -570,8 +570,12 @@ type app struct {
 	// by the worker goroutine) so a truncated result can be fetched again.
 	lastYtArgs  []string
 	lastYtFiles []string
-	// lastCaptureFile is the file saved by the latest browser-capture download.
-	lastCaptureFile string
+	// lastCaptureFile is the file saved by the latest browser-capture download;
+	// lastCaptureStreams the stream address(es) it came from.
+	lastCaptureFile    string
+	lastCaptureStreams []string
+	// episodeGuard is set while one ?ep=N episode is captured (episode_capture.go).
+	episodeGuard *episodeGuard
 	// lastYtGeneric: the latest yt-dlp run used its generic (any web page)
 	// extractor, so its result is a guess and is checked strictly.
 	lastYtGeneric bool

@@ -50,6 +50,9 @@ type browserMediaCandidate struct {
 	PlayedURL string
 	// EpisodeMatch: the stream's path carries the episode number of the page.
 	EpisodeMatch bool
+	// UsedByEpisode: another episode of the same batch already saved this
+	// stream (episode_capture.go), so it is chosen last.
+	UsedByEpisode int
 	// Alternates are the other streams seen during the same capture, best
 	// first; they are tried when the chosen one fails the media check.
 	Alternates []browserMediaCandidate
@@ -148,7 +151,7 @@ func (a *app) upgradeToBestVariant(c browserMediaCandidate, mode int) browserMed
 	if !ok {
 		return c
 	}
-	a.postLog(fmt.Sprintf("✓ 頁面播放器提供更高畫質：改下載 %d×%d（預設播放的是 %d×%d）。\r\n", best.Width, best.Height, played.Width, played.Height))
+	a.postLog(fmt.Sprintf("✓ 頁面播放器提供更高畫質：改下載 %s（預設播放的是 %s）。\r\n", best.sizeText(), played.sizeText()))
 	c.PlayedURL = c.URL
 	c.URL = best.URL
 	return c
@@ -294,6 +297,9 @@ func betterCaptureCandidate(newC, oldC browserMediaCandidate) bool {
 	}
 	if newC.EpisodeMatch != oldC.EpisodeMatch {
 		return newC.EpisodeMatch
+	}
+	if (newC.UsedByEpisode == 0) != (oldC.UsedByEpisode == 0) {
+		return newC.UsedByEpisode == 0
 	}
 	if newC.Score != oldC.Score {
 		return newC.Score > oldC.Score
@@ -449,6 +455,7 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 				a.lastCaptureFile = f
 			}
 		}
+		a.lastCaptureStreams = []string{candidate.URL, candidate.PlayedURL}
 		return nil
 	} else if errors.Is(err, errStopped) {
 		return err
@@ -516,6 +523,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 	}
 	a.postLog("✓ FFmpeg 已使用瀏覽器實際播放請求完成下載：" + dest + "\r\n")
 	a.lastCaptureFile = dest
+	a.lastCaptureStreams = []string{candidate.URL, candidate.PlayedURL}
 	a.noteOutput(dest)
 	return nil
 }
@@ -551,10 +559,15 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 		if err == nil && !a.stopRequested.Load() {
 			err = a.finishStep(ctx, mode, cfg, true)
 		}
+		if err == nil && a.episodeGuard != nil && mode != 3 && a.lastCaptureFile != "" {
+			if err = a.checkSavedEpisode(a.episodeGuard, a.lastCaptureFile); err != nil {
+				a.lastCaptureFile = ""
+			}
+		}
 		return err
 	}
 	err = download(candidate)
-	if err == nil || !isMediaCheckFailure(err) || a.stopRequested.Load() {
+	if err == nil || !(isMediaCheckFailure(err) || isEpisodeRepeated(err)) || a.stopRequested.Load() {
 		return err
 	}
 	// The chosen stream was a preview, an ad, a lone audio/video track or a

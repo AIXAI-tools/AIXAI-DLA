@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const samplePlayJSON = `{"data":{"episode_no":3,"streams":[
  {"quality":"576p","codec":"h264","protocol":"mp4","width":576,"height":1024,"url":"https://cdn.example.com/a/576h264.mp4?sig=1"},
@@ -62,5 +65,20 @@ func TestVariantFromQualityLabel(t *testing.T) {
 	v, ok := variantFromObject(map[string]interface{}{"src": "https://e.example.com/v.m3u8", "label": "1080p"})
 	if !ok || v.shortSide() != 1080 {
 		t.Fatalf("got ok=%v v=%+v", ok, v)
+	}
+}
+
+func TestUpgradeWithQualityLabelOnly(t *testing.T) {
+	// Player data that names renditions only by "720p"/"1080p" (width/height null).
+	body := []byte(`{"data":{"episode_no":3,"selected":{"quality":"720p","width":null,"height":null,"url":"https://cdn.example.com/oA?auth_key=1"},
+		"streams":[{"quality":"720p","codec":"h264","width":null,"height":null,"url":"https://cdn.example.com/oA?auth_key=1"},
+		{"quality":"1080p","codec":"h264","width":null,"height":null,"url":"https://cdn.example.com/oB?auth_key=1"}]}}`)
+	best, played, ok := betterVariantFromPageJSON([][]byte{body}, "https://cdn.example.com/oA?auth_key=2", 0)
+	if !ok || !strings.Contains(best.URL, "/oB") || played.shortSide() != 720 {
+		t.Fatalf("best=%+v played=%+v ok=%v", best, played, ok)
+	}
+	// The 720p limit keeps the played rendition.
+	if _, _, ok := betterVariantFromPageJSON([][]byte{body}, "https://cdn.example.com/oA", 720); ok {
+		t.Fatal("720p limit must not upgrade")
 	}
 }

@@ -273,6 +273,10 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
 .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .thumb{position:relative;width:110px;height:74px;border-radius:6px;border:1px solid var(--border);overflow:hidden;background:var(--surface-3);display:grid;place-items:center;font-size:11px;color:var(--muted);text-align:center;padding:2px}
 .thumb img{width:100%;height:100%;object-fit:cover}
+.fb-hint{font-size:12px;color:var(--muted);margin-top:6px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.chip{display:flex;align-items:center;gap:6px;max-width:100%;padding:4px 6px 4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-3);font-size:12px;font-family:var(--mono);word-break:break-all}
+.chip button{flex:none;width:20px;height:20px;border-radius:50%;border:0;background:rgba(0,0,0,.45);color:#fff;cursor:pointer;line-height:20px;padding:0}
 .thumb button{position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;cursor:pointer;line-height:20px;padding:0}
 .note{font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px}
 .toast{position:fixed;right:20px;bottom:20px;max-width:380px;padding:12px 16px;border-radius:10px;background:var(--text);color:var(--bg);box-shadow:var(--shadow);transform:translateY(20px);opacity:0;transition:.25s;pointer-events:none;z-index:9}
@@ -527,19 +531,28 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
     <div class="field">
       <label class="f">截圖</label>
       <div class="row">
-        <button class="btn sm" id="btnShot">擷取目前畫面</button>
+        <button class="btn sm" id="btnShot">部分截圖</button>
         <button class="btn sm" id="btnAddImg">加入圖片…</button>
       </div>
+      <div class="fb-hint">「部分截圖」會開啟 Windows 內建的截圖工具：用滑鼠拖曳要截取的範圍，只會附上你選的部分（按 Esc 取消）。</div>
       <div class="thumbs" id="thumbs"></div>
+    </div>
+    <div class="field">
+      <label class="f">紀錄檔</label>
+      <div class="row">
+        <button class="btn sm" id="btnAddLog">加入紀錄檔…</button>
+      </div>
+      <div class="fb-hint">已自動附上最近一次下載的紀錄檔。附上的是副本，Cookie、登入資訊與使用者資料夾路徑已遮蔽；不需要可按 × 移除。</div>
+      <div class="chips" id="fbLogs"></div>
     </div>
     <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
     <div class="note" id="fbWhere"></div>
     <div class="banner" id="fbResult"></div>
   </div>
   <div class="dlg-f">
-    <button class="btn ghost" id="btnFbCopy">只複製內容</button>
-    <button class="btn" id="btnFbMail">以 Email 回報</button>
-    <button class="btn primary" id="btnFbGitHub">透過 GitHub 回報</button>
+    <button class="btn ghost" id="btnFbCopy">複製回報內容</button>
+    <button class="btn" id="btnFbGitHub">透過 GitHub 回報</button>
+    <button class="btn primary" id="btnFbSend">直接送出</button>
   </div>
 </dialog>
 
@@ -582,7 +595,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const state = { init:null, jobs:{}, openJobs:new Set(), kind:"bug", images:[], releases:null, saveTimer:0 };
+const state = { init:null, jobs:{}, openJobs:new Set(), kind:"bug", images:[], logs:[], logsRemoved:new Set(), snipping:false, releases:null, saveTimer:0 };
 
 /* ---------------- theme ---------------- */
 const themeOrder = ["system","light","dark"];
@@ -671,10 +684,13 @@ function fillForm(init){
   setJobs(init.jobs||[]);
   setFailed(init.failed||[]);
   $("dataFolder").value=s.data_folder||""; $("dataFolder").placeholder=init.dataDefault||"";
-  $("fbWhere").innerHTML = `回報會送到專案的 <b>GitHub Issues</b>（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；公開可追蹤，方便對應到版本修正。`
-    + (init.email ? `<br>沒有 GitHub 帳號也可以用 <b>Email</b>：會用你電腦上的郵件程式（或貼到 Gmail 等網頁信箱）寄到 ${esc(init.email)}，截圖請手動加入附件。` : "")
-    + `<br>按下後會在瀏覽器開啟已填好的回報頁，並開啟截圖所在資料夾，把圖片拖進去即可。`;
-  $("btnFbMail").classList.toggle("hidden", !init.email);
+  $("fbWhere").innerHTML = (init.directSend
+      ? `<b>直接送出</b>：不需要登入，說明、聯絡方式、診斷資訊與上方列出的截圖／紀錄檔會以 Email 寄給開發者（不公開）。<br>`
+      : "")
+    + `<b>透過 GitHub 回報</b>：公開在專案的 GitHub Issues（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；會在瀏覽器開啟已填好的回報頁，並開啟附件所在資料夾，把檔案拖進去即可。`
+    + `<br><b>複製回報內容</b>：整理好的內容複製到剪貼簿，可貼到任何聊天或信件。`;
+  $("btnFbSend").classList.toggle("hidden", !init.directSend);
+  $("btnFbGitHub").classList.toggle("primary", !init.directSend);
   refreshDependent();
 }
 
@@ -941,6 +957,7 @@ window.aixai={ on(name,p){
           [mkBtn("顯示登入視窗",()=>goShowLoginWindow().then(e=>{ if(e) toast(e); }))]);
       } else { hideBanner(); }
       break;
+    case "snip": onSnip(p||{}); break;
     case "releases": renderReleases(p); break;
     case "update": renderUpdate(p); break;
   }
@@ -982,29 +999,56 @@ function openFeedback(prefill){
   $("dlgFeedback").showModal(); $("fbResult").className="banner";
   if(prefill && !$("fbText").value) $("fbText").value="執行時出現錯誤：\n"+prefill.split("\n").slice(0,4).join("\n")+"\n\n（請補充：操作步驟）";
   $("fbText").focus();
+  if(!state.logs.length) goLatestLog().then(l=>{ if(l && l.path && !state.logs.length && !state.logsRemoved.has(l.name)){ state.logs.push(l); renderLogs(); } });
 }
+function renderLogs(){
+  $("fbLogs").innerHTML=state.logs.map((l,i)=>`<div class="chip" title="${esc(l.path)}">${esc(l.name)}<button data-i="${i}" aria-label="移除">×</button></div>`).join("");
+}
+$("fbLogs").onclick=e=>{ const b=e.target.closest("button[data-i]"); if(b){ state.logsRemoved.add(state.logs[+b.dataset.i].name); state.logs.splice(+b.dataset.i,1); renderLogs(); } };
+$("btnAddLog").onclick=async()=>{
+  const r=await goPickLogs();
+  (r.logs||[]).forEach(l=>{ if(!state.logs.some(x=>x.path===l.path)) state.logs.push(l); });
+  renderLogs(); if(r.problem) toast(r.problem);
+};
 $("btnFeedback").onclick=()=>openFeedback();
 document.querySelectorAll(".seg button").forEach(b=>b.onclick=()=>{ document.querySelectorAll(".seg button").forEach(x=>x.setAttribute("aria-pressed","false")); b.setAttribute("aria-pressed","true"); state.kind=b.dataset.kind; });
 function renderThumbs(){
   $("thumbs").innerHTML=state.images.map((im,i)=>`<div class="thumb" title="${esc(im.name)}">${im.dataUrl?`<img src="${im.dataUrl}" alt="">`:esc(im.name)}<button data-i="${i}" aria-label="移除">×</button></div>`).join("");
 }
 $("thumbs").onclick=e=>{ const b=e.target.closest("button[data-i]"); if(b){ state.images.splice(+b.dataset.i,1); renderThumbs(); } };
+/* Partial screenshot: Windows' own snipping overlay; the picture arrives as a "snip" event.
+   The dialog steps aside so the window behind it can be captured, and comes back when
+   this window gets the focus again (snip taken or cancelled with Esc). */
+function snipBusy(on){ state.snipping=on; $("btnShot").textContent=on?"等待截圖…（按此取消）":"部分截圖"; }
 $("btnShot").onclick=async()=>{
-  const d=$("dlgFeedback"); d.close(); await new Promise(r=>setTimeout(r,350));
-  try{ const im=await goCaptureScreenshot(); state.images.push(im); toast("已擷取畫面"); }catch(e){ toast("截圖失敗："+e); }
-  d.showModal(); renderThumbs();
+  if(state.snipping){ goCancelSnip(); return; }
+  const d=$("dlgFeedback"); d.close(); await new Promise(r=>setTimeout(r,250));
+  const err=await goStartSnip();
+  if(err){ toast(err); d.showModal(); return; }
+  snipBusy(true);
+  setTimeout(()=>window.addEventListener("focus",()=>setTimeout(()=>{ if(!d.open) d.showModal(); },400),{once:true}),800);
 };
+function onSnip(p){
+  snipBusy(false);
+  const d=$("dlgFeedback"); if(!d.open) d.showModal();
+  if(p.image){ state.images.push(p.image); renderThumbs(); toast("已加入截圖"); }
+  else if(p.error) toast(p.error);
+}
 $("btnAddImg").onclick=async()=>{ const list=await goPickImages(); (list||[]).forEach(im=>state.images.push(im)); renderThumbs(); };
 async function sendFeedback(channel){
   fieldError(null);
   if(!$("fbText").value.trim()){ fieldError("fbText","請先寫下想回報的內容。"); return; }
+  const sendBtn=$("btnFbSend");
+  if(channel==="send"){ sendBtn.disabled=true; sendBtn.textContent="送出中…"; }
   try{
-    const res=await goSubmitFeedback({kind:state.kind,text:$("fbText").value,contact:$("fbContact").value,includeDiag:$("fbDiag").checked,images:state.images.map(i=>i.path),channel});
+    const res=await goSubmitFeedback({kind:state.kind,text:$("fbText").value,contact:$("fbContact").value,includeDiag:$("fbDiag").checked,images:state.images.map(i=>i.path),logs:state.logs.map(l=>l.path),channel});
     const b=$("fbResult"); b.className="banner show ok"; b.textContent=res.message;
+    if(channel==="send"){ $("fbText").value=""; state.images=[]; state.logs=[]; renderThumbs(); renderLogs(); }
   }catch(e){ const b=$("fbResult"); b.className="banner show err"; b.textContent=String(e); }
+  finally{ sendBtn.disabled=false; sendBtn.textContent="直接送出"; }
 }
+$("btnFbSend").onclick=()=>sendFeedback("send");
 $("btnFbGitHub").onclick=()=>sendFeedback("github");
-$("btnFbMail").onclick=()=>sendFeedback("email");
 $("btnFbCopy").onclick=()=>sendFeedback("copy");
 document.querySelectorAll("dialog [data-close]").forEach(b=>b.onclick=()=>b.closest("dialog").close());
 

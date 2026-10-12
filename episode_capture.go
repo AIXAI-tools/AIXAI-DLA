@@ -17,9 +17,12 @@ import (
 // N without any error. Such addresses are therefore always played in the
 // capture browser, which loads exactly the episode the page shows.
 //
-// Two safeguards:
+// Safeguards:
+//   - a stream already saved for another episode of the batch is chosen last:
+//     such pages often load episode 1 next to the requested one;
 //   - every saved file is compared with the earlier episodes of the batch;
-//     an identical file means the page ignored the parameter → stop;
+//     an identical file is set aside and the other streams of the capture are
+//     tried; when none differs, the page ignored the parameter → stop;
 //   - two episodes in a row that do not play (sign-in or unlock required,
 //     or the page has no such episode) stop the batch instead of opening
 //     the browser for every remaining episode. Nothing tries to get around
@@ -72,20 +75,76 @@ func (e *errEpisodeRepeated) Error() string {
 	return fmt.Sprintf("第 %d 集下載到的影片與第 %d 集完全相同：這個網頁可能不支援以網址參數指定集數，已停止以免存下重複的影片", e.ep, e.sameAs)
 }
 
-// episodeBatch remembers the files saved by one batch.
+// episodeBatch remembers the files and streams saved by one batch.
 type episodeBatch struct {
 	byHash   map[string]int
-	failures int // consecutive episodes that did not play
+	byStream map[string]int // streamPathKey → episode
+	failures int            // consecutive episodes that did not play
 }
 
-func newEpisodeBatch() *episodeBatch { return &episodeBatch{byHash: map[string]int{}} }
+func newEpisodeBatch() *episodeBatch {
+	return &episodeBatch{byHash: map[string]int{}, byStream: map[string]int{}}
+}
+
+// episodeGuard is the batch and episode being captured (app.episodeGuard).
+type episodeGuard struct {
+	batch *episodeBatch
+	ep    int
+}
+
+// streamPathKey identifies a stream by host and path: signed query values
+// change between requests of the same file.
+func streamPathKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Host) + u.EscapedPath()
+}
+
+// streamUsedBy returns the other episode that already saved this stream, or 0.
+func (g *episodeGuard) streamUsedBy(stream string) int {
+	if g == nil || stream == "" {
+		return 0
+	}
+	if other := g.batch.byStream[streamPathKey(stream)]; other != g.ep {
+		return other
+	}
+	return 0
+}
+
+// checkSavedEpisode compares a saved file with the earlier episodes. A repeat is
+// kept (nothing is deleted) but renamed so it is not taken for this episode.
+func (a *app) checkSavedEpisode(g *episodeGuard, path string) error {
+	sum, err := fileSHA256(path)
+	if err != nil {
+		return nil
+	}
+	first, ok := g.batch.byHash[sum]
+	if !ok || first == g.ep {
+		return nil
+	}
+	ext := filepath.Ext(path)
+	marked := strings.TrimSuffix(path, ext) + fmt.Sprintf("（與第%d集相同）", first) + ext
+	if os.Rename(path, marked) == nil {
+		a.postLog("ℹ 重複的檔案已改名為：" + filepath.Base(marked) + "\r\n")
+	}
+	a.diagNote(fmt.Sprintf("檔案與第 %d 集完全相同", first))
+	return &errEpisodeRepeated{ep: g.ep, sameAs: first}
+}
 
 // runEpisodeCapture downloads one ?ep=N episode through the capture browser.
 func (a *app) runEpisodeCapture(ctx context.Context, batch *episodeBatch, rawURL string, mode int, formatID, output string, cfg settings) error {
 	ep := episodeFromQuery(rawURL)
 	a.postLog(fmt.Sprintf("→ 這個網頁的所有集數共用同一個網址，改以瀏覽器播放第 %d 集並擷取影片。\r\n", ep))
-	a.lastCaptureFile = ""
+	a.lastCaptureFile, a.lastCaptureStreams = "", nil
+	g := &episodeGuard{batch: batch, ep: ep}
+	a.episodeGuard = g
 	err := a.runBrowserCaptureFallback(ctx, rawURL, mode, formatID, output, cfg)
+	a.episodeGuard = nil
+	if isEpisodeRepeated(err) {
+		return err
+	}
 	if err != nil {
 		batch.failures++
 		return err
@@ -94,20 +153,14 @@ func (a *app) runEpisodeCapture(ctx context.Context, batch *episodeBatch, rawURL
 	if mode == 3 || a.lastCaptureFile == "" {
 		return nil
 	}
-	sum, hashErr := fileSHA256(a.lastCaptureFile)
-	if hashErr != nil {
-		return nil
+	if sum, hashErr := fileSHA256(a.lastCaptureFile); hashErr == nil {
+		batch.byHash[sum] = ep
 	}
-	if first, ok := batch.byHash[sum]; ok && first != ep {
-		// Keep the file (nothing is deleted) but mark it so it is not taken for episode N.
-		ext := filepath.Ext(a.lastCaptureFile)
-		marked := strings.TrimSuffix(a.lastCaptureFile, ext) + fmt.Sprintf("（與第%d集相同）", first) + ext
-		if os.Rename(a.lastCaptureFile, marked) == nil {
-			a.postLog("ℹ 重複的檔案已改名為：" + filepath.Base(marked) + "\r\n")
+	for _, s := range a.lastCaptureStreams {
+		if s != "" {
+			batch.byStream[streamPathKey(s)] = ep
 		}
-		return &errEpisodeRepeated{ep: ep, sameAs: first}
 	}
-	batch.byHash[sum] = ep
 	return nil
 }
 

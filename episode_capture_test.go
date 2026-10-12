@@ -94,3 +94,29 @@ func TestPageEpisodeFromJSObjectList(t *testing.T) {
 		}
 	}
 }
+
+func TestEpisodeGuardPrefersUnusedStream(t *testing.T) {
+	batch := newEpisodeBatch()
+	batch.byStream[streamPathKey("https://cdn.example.com/oAAA?auth_key=1")] = 1
+	g := &episodeGuard{batch: batch, ep: 3}
+	if got := g.streamUsedBy("https://cdn.example.com/oAAA?auth_key=2&x=y"); got != 1 {
+		t.Fatalf("used by %d, want 1 (signed query must not matter)", got)
+	}
+	if got := g.streamUsedBy("https://cdn.example.com/oBBB?auth_key=1"); got != 0 {
+		t.Fatalf("used by %d, want 0", got)
+	}
+	if got := (&episodeGuard{batch: batch, ep: 1}).streamUsedBy("https://cdn.example.com/oAAA"); got != 0 {
+		t.Fatalf("the same episode retried must not count, got %d", got)
+	}
+	var none *episodeGuard
+	if none.streamUsedBy("https://cdn.example.com/oAAA") != 0 {
+		t.Fatal("nil guard must report 0")
+	}
+	// Same score: the larger stream used to win; a stream already saved for
+	// episode 1 now loses to the smaller unused one.
+	old := browserMediaCandidate{URL: "https://cdn.example.com/oAAA", Score: 147, ContentLength: 18 << 20, UsedByEpisode: 1}
+	cur := browserMediaCandidate{URL: "https://cdn.example.com/oBBB", Score: 147, ContentLength: 13 << 20}
+	if !betterCaptureCandidate(cur, old) || betterCaptureCandidate(old, cur) {
+		t.Fatal("the unused stream must win")
+	}
+}

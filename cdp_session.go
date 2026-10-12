@@ -834,6 +834,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				continue
 			}
 			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode) || listed.matches(c.URL)
+			c.UsedByEpisode = a.episodeGuard.streamUsedBy(c.URL)
 			if key := candidateKey(c.URL); !seenKeys[key] && len(seen) < 40 {
 				seenKeys[key] = true
 				seen = append(seen, c)
@@ -842,7 +843,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				best = c
 				if best.Score >= 125 {
 					wait := 3500 * time.Millisecond
-					if pageEpisode > 0 && !best.EpisodeMatch && (streamHasNumberSegment(best.URL) || hasListed) {
+					if pageEpisode > 0 && !best.EpisodeMatch && (streamHasNumberSegment(best.URL) || hasListed || best.UsedByEpisode > 0) {
 						// The stream is numbered, but not with this page's
 						// episode: likely a preloaded neighbouring episode, so
 						// give the page's own episode stream time to show up.
@@ -876,6 +877,8 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
 				if pageEpisode > 0 && best.EpisodeMatch {
 					a.postLog(fmt.Sprintf("✓ 串流網址與第 %d 集相符。\r\n", pageEpisode))
+				} else if best.UsedByEpisode > 0 {
+					a.postLog(fmt.Sprintf("⚠ 頁面只載入了第 %d 集已下載過的串流，仍先下載並比對內容。\r\n", best.UsedByEpisode))
 				} else if pageEpisode > 0 && (streamHasNumberSegment(best.URL) || hasListed) {
 					a.postLog(fmt.Sprintf("⚠ 沒有找到確定屬於第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}

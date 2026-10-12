@@ -296,6 +296,7 @@ type uiInit struct {
 	Presets     []uiOption   `json:"presets"`
 	Repo        string       `json:"repo"`
 	Email       string       `json:"email"`
+	DirectSend  bool         `json:"directSend"`
 	LogFile     string       `json:"logFile"`
 	Jobs        []jobView    `json:"jobs"`
 	Failed      []failedView `json:"failed"`
@@ -364,7 +365,7 @@ func (a *app) bindUI() {
 		a.initializeLocalState()
 		a.loadJobsOnce.Do(a.loadJobs)
 		return uiInit{Jobs: a.jobViews(), Failed: a.failedViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
-			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, LogFile: a.dataFolder(), DataDefault: defaultDataFolder()}
+			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, DirectSend: feedbackEndpoint != "", LogFile: a.dataFolder(), DataDefault: defaultDataFolder()}
 	})
 	_ = w.Bind("goStart", a.startFromUI)
 	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
@@ -425,7 +426,13 @@ func (a *app) bindUI() {
 	// Updates and feedback live in updater.go / feedback.go.
 	_ = w.Bind("goCheckUpdates", func() { go a.checkUpdatesAsync() })
 	_ = w.Bind("goInstallRelease", func(tag string) { go a.installReleaseAsync(tag) })
-	_ = w.Bind("goCaptureScreenshot", func() (feedbackImage, error) { return a.captureWindowScreenshot() })
+	_ = w.Bind("goStartSnip", func() string { return a.startSnip() })
+	_ = w.Bind("goCancelSnip", func() { snipCancel.Store(true) })
+	_ = w.Bind("goLatestLog", func() feedbackLog { return a.latestFeedbackLog() })
+	_ = w.Bind("goPickLogs", func() map[string]interface{} {
+		logs, problem := a.pickFeedbackLogs()
+		return map[string]interface{}{"logs": logs, "problem": problem}
+	})
 	_ = w.Bind("goPickImages", func() []feedbackImage { return a.pickFeedbackImages() })
 	_ = w.Bind("goSubmitFeedback", func(fb feedbackRequest) (feedbackResult, error) { return a.submitFeedback(fb) })
 }
