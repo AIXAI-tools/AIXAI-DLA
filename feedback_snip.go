@@ -243,14 +243,61 @@ func (a *app) attachFeedbackLog(src string) (feedbackLog, error) {
 	return feedbackLog{Path: dest, Name: name}, nil
 }
 
-// latestFeedbackLog attaches the newest run log ("" Path when there is none).
-func (a *app) latestFeedbackLog() feedbackLog {
-	for _, f := range a.runLogFiles() {
-		if l, err := a.attachFeedbackLog(f); err == nil {
-			return l
+// feedbackFailMarkers are the lines a run log gets when an item or the whole
+// task failed (main.go 項失敗／diagnostics.go 結果：失敗／jobs.go finishJob).
+var feedbackFailMarkers = []string{"項失敗：", "結果：失敗", "部分項目失敗", "] 錯誤："}
+
+// feedbackFailScan is how many of the newest run logs are searched for a
+// failed one.
+const feedbackFailScan = 10
+
+func runLogHasFailure(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > maxFeedbackLog {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	for _, m := range feedbackFailMarkers {
+		if strings.Contains(text, m) {
+			return true
 		}
 	}
-	return feedbackLog{}
+	return false
+}
+
+// latestFeedbackLogs attaches the newest run log and, when that one has no
+// failure, also the newest run log that does: a report is usually about a
+// failure, while the newest log may belong to another task still running.
+func (a *app) latestFeedbackLogs() []feedbackLog {
+	files := a.runLogFiles()
+	var out []feedbackLog
+	newest := ""
+	for _, f := range files {
+		if l, err := a.attachFeedbackLog(f); err == nil {
+			out, newest = append(out, l), f
+			break
+		}
+	}
+	if newest == "" || runLogHasFailure(newest) {
+		return out
+	}
+	for i, f := range files {
+		if i >= feedbackFailScan {
+			break
+		}
+		if f == newest || !runLogHasFailure(f) {
+			continue
+		}
+		if l, err := a.attachFeedbackLog(f); err == nil {
+			out = append(out, l)
+		}
+		break
+	}
+	return out
 }
 
 // pickFeedbackLogs is 加入紀錄檔…: the file dialog starts in the run-log folder.

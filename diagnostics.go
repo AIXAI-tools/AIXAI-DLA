@@ -120,7 +120,10 @@ func diagErrorText(err error) string {
 	}
 	line := ""
 	for _, l := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
+		if l = strings.TrimSpace(l); l != "" && line == "" {
+			line = l
+		}
+		if strings.HasPrefix(l, "ERROR:") { // yt-dlp prints its warnings first
 			line = l
 			break
 		}

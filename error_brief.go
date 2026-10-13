@@ -25,7 +25,7 @@ var briefRules = []briefRule{
 	{[]string{"drm protected", "drm-protected", "[drm]", "uses drm", "has drm"}, "影片受 DRM 保護，本工具不處理受保護的內容"},
 	{[]string{"private video", "this video is private", "video is private"}, "這是私人影片，只有獲得權限的帳號能觀看"},
 	{[]string{"members-only", "members only", "join this channel"}, "這是會員限定內容"},
-	{[]string{"not available in your country", "geo restrict", "geo-restrict", "not available in your region", "blocked it in your country"},
+	{[]string{"not available in your country", "geo restrict", "geo-restrict", "not available in your region", "blocked it in your country", "不會繞過地區限制"},
 		"這部影片在你所在的地區無法觀看"},
 	{[]string{"sign in to confirm your age", "age-restricted", "age restricted", "inappropriate for some users"},
 		"影片有年齡限制，需要登入已成年的帳號"},

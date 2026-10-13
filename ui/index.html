@@ -542,7 +542,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
       <div class="row">
         <button class="btn sm" id="btnAddLog">加入紀錄檔…</button>
       </div>
-      <div class="fb-hint">已自動附上最近一次下載的紀錄檔。附上的是副本，Cookie、登入資訊與使用者資料夾路徑已遮蔽；不需要可按 × 移除。</div>
+      <div class="fb-hint">已自動附上最近一次下載的紀錄檔；若最近一次沒有失敗，另附最近一次有失敗的紀錄檔。附上的是副本，Cookie、登入資訊與使用者資料夾路徑已遮蔽；不需要可按 × 移除。</div>
       <div class="chips" id="fbLogs"></div>
     </div>
     <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
@@ -999,7 +999,7 @@ function openFeedback(prefill){
   $("dlgFeedback").showModal(); $("fbResult").className="banner";
   if(prefill && !$("fbText").value) $("fbText").value="執行時出現錯誤：\n"+prefill.split("\n").slice(0,4).join("\n")+"\n\n（請補充：操作步驟）";
   $("fbText").focus();
-  if(!state.logs.length) goLatestLog().then(l=>{ if(l && l.path && !state.logs.length && !state.logsRemoved.has(l.name)){ state.logs.push(l); renderLogs(); } });
+  if(!state.logs.length) goLatestLogs().then(ls=>{ if(state.logs.length) return; (ls||[]).forEach(l=>{ if(l && l.path && !state.logsRemoved.has(l.name)) state.logs.push(l); }); renderLogs(); });
 }
 function renderLogs(){
   $("fbLogs").innerHTML=state.logs.map((l,i)=>`<div class="chip" title="${esc(l.path)}">${esc(l.name)}<button data-i="${i}" aria-label="移除">×</button></div>`).join("");

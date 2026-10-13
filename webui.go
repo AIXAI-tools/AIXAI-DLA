@@ -428,7 +428,7 @@ func (a *app) bindUI() {
 	_ = w.Bind("goInstallRelease", func(tag string) { go a.installReleaseAsync(tag) })
 	_ = w.Bind("goStartSnip", func() string { return a.startSnip() })
 	_ = w.Bind("goCancelSnip", func() { snipCancel.Store(true) })
-	_ = w.Bind("goLatestLog", func() feedbackLog { return a.latestFeedbackLog() })
+	_ = w.Bind("goLatestLogs", func() []feedbackLog { return a.latestFeedbackLogs() })
 	_ = w.Bind("goPickLogs", func() map[string]interface{} {
 		logs, problem := a.pickFeedbackLogs()
 		return map[string]interface{}{"logs": logs, "problem": problem}

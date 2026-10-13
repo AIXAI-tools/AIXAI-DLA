@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.7"
+	appVersion = "4.1.8"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1242,9 +1242,33 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 		}
 
+		// The main media server refused but the site lists backup servers for
+		// the same streams (backup_streams.go); only for a normally served page.
+		notServed := false
+		if err != nil && !a.stopRequested.Load() && site == "bilibili" && isHTTPForbidden(err) {
+			if _, _, ok := backupStreamsIDs(rawURL); ok {
+				a.postLog("⚠ 主要影音伺服器拒絕存取（403），改用網站提供的備用伺服器下載。\r\n")
+				a.postStatus("狀態：正在改用網站提供的備用伺服器…")
+				backupErr := a.downloadFromBackupStreams(ctx, rawURL, mode, formatID, output, cfg)
+				a.diagRecord("備用伺服器", backupErr)
+				switch {
+				case backupErr == nil:
+					a.postLog("✓ 已從備用伺服器下載完成。\r\n")
+					err = nil
+				case errors.Is(backupErr, errBackupNotServed):
+					notServed = true
+					a.postLog("⚠ " + backupErr.Error() + "。\r\n")
+					err = &commandRunError{Cause: err, Summary: backupErr.Error() + "。\n\n" + errorLine(err.Error())}
+				case a.stopRequested.Load():
+				default:
+					a.postLog("⚠ 備用伺服器也無法下載：" + firstLine(backupErr.Error()) + "\r\n")
+				}
+			}
+		}
+
 		// Vimeo and Bilibili may also need transport/extractor compatibility
 		// options that are unrelated to authentication.
-		if err != nil && !a.stopRequested.Load() && (site == "bilibili" || site == "vimeo") && !isAuthenticationRequired(err) {
+		if err != nil && !a.stopRequested.Load() && (site == "bilibili" || site == "vimeo") && !isAuthenticationRequired(err) && !notServed {
 			a.postLog("⚠ 一般自動重試仍失敗，正在啟用網站相容模式再重試一次。\r\n")
 			a.postStatus("狀態：正在啟用 " + siteDisplayName(site) + " 相容模式重試…")
 			retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
