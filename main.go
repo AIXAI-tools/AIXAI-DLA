@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.8"
+	appVersion = "4.1.9"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -43,9 +43,6 @@ const (
 	denoChecksumURL        = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum"
 	ffmpegURL              = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 	ffmpegChecksumURL      = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
-
-	defaultTemplate  = "%(title).200B [%(id)s].%(ext)s"
-	playlistTemplate = "%(playlist_title).180B/%(playlist_index)03d - %(title).170B [%(id)s].%(ext)s"
 
 	// RichEdit stores text internally as UTF-16. Keeping about five million
 	// UTF-16 code units limits the visible log to roughly 10 MiB. Once the
@@ -3506,10 +3503,11 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 	}
 	if mode != 3 {
 		args = append(args, "-P", output)
+		single, playlist := outputTemplates(output)
 		if collection && cfg.PlaylistFolder {
-			args = append(args, "-o", playlistTemplate)
+			args = append(args, "-o", playlist)
 		} else {
-			args = append(args, "-o", defaultTemplate)
+			args = append(args, "-o", single)
 		}
 	}
 	if collection {
