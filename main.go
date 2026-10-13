@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.1.6"
+	appVersion = "4.1.7"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -3676,7 +3676,7 @@ func classifySiteURL(raw string) string {
 	switch {
 	case host == "youtube.com" || host == "youtu.be" || strings.HasSuffix(host, ".youtube.com"):
 		return "youtube"
-	case host == "b23.tv" || strings.HasSuffix(host, ".bilibili.com") || host == "bilibili.com":
+	case host == "b23.tv" || strings.HasSuffix(host, ".bilibili.com") || host == "bilibili.com" || host == "bilibili.tv" || strings.HasSuffix(host, ".bilibili.tv"):
 		return "bilibili"
 	case host == "vimeo.com" || strings.HasSuffix(host, ".vimeo.com"):
 		return "vimeo"

@@ -685,7 +685,7 @@ function fillForm(init){
   setFailed(init.failed||[]);
   $("dataFolder").value=s.data_folder||""; $("dataFolder").placeholder=init.dataDefault||"";
   $("fbWhere").innerHTML = (init.directSend
-      ? `<b>直接送出</b>：不需要登入，說明、聯絡方式、診斷資訊與上方列出的截圖／紀錄檔會以 Email 寄給開發者（不公開）。<br>`
+      ? `<b>直接送出</b>：不需要登入，說明、聯絡方式、診斷資訊與上方列出的截圖／紀錄檔會以 Email 寄給開發者，並保存一份在開發者的 Google 帳號以便追蹤處理（不公開）。<br>`
       : "")
     + `<b>透過 GitHub 回報</b>：公開在專案的 GitHub Issues（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；會在瀏覽器開啟已填好的回報頁，並開啟附件所在資料夾，把檔案拖進去即可。`
     + `<br><b>複製回報內容</b>：整理好的內容複製到剪貼簿，可貼到任何聊天或信件。`;
