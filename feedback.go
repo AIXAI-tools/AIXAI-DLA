@@ -44,8 +44,10 @@ type feedbackRequest struct {
 	Contact     string   `json:"contact"`
 	IncludeDiag bool     `json:"includeDiag"`
 	Images      []string `json:"images"`
-	Logs        []string `json:"logs"`    // scrubbed log copies (feedback_snip.go)
-	Channel     string   `json:"channel"` // send | github | email | copy
+	Logs        []string `json:"logs"`      // scrubbed log copies (feedback_snip.go)
+	Channel     string   `json:"channel"`   // send | github | email | copy
+	WantReply   bool     `json:"wantReply"` // 直接送出 only: look for the developer's reply (feedback_replies.go)
+	Ref         string   `json:"ref"`       // the earlier report this one answers
 }
 
 type feedbackResult struct {
@@ -203,11 +205,17 @@ func (a *app) submitFeedback(fb feedbackRequest) (feedbackResult, error) {
 	full := "# " + title + "\n\n" + body
 	attachments := append(append([]string(nil), fb.Images...), fb.Logs...)
 	if fb.Channel == "send" {
-		if err := a.sendFeedbackDirect(title, body, attachments); err != nil {
+		id, err := a.sendFeedbackDirect(title, body, attachments, fb.Ref, fb.WantReply)
+		if err != nil {
 			if setClipboardText(a.hwnd, full) == nil {
 				return feedbackResult{}, errors.New(err.Error() + "（回報內容已複製到剪貼簿，可改用其他方式貼上）")
 			}
 			return feedbackResult{}, err
+		}
+		if fb.WantReply {
+			a.recordReplyThread(id, replyTitle(fb.Text), fb.Ref)
+			a.startReplyPolling()
+			return feedbackResult{Message: "已送出，謝謝你的回報！開發者回覆時，程式會跳出通知。"}, nil
 		}
 		return feedbackResult{Message: "已送出，謝謝你的回報！"}, nil
 	}

@@ -53,7 +53,7 @@ func TestSendFeedbackDirectRetriesDroppedConnection(t *testing.T) {
 	for _, status5xx := range []bool{false, true} {
 		srv, ids := relayStub(t, 2, status5xx)
 		withRelay(t, srv.URL)
-		if err := (&app{}).sendFeedbackDirect("t", "body", nil); err != nil {
+		if _, err := (&app{}).sendFeedbackDirect("t", "body", nil, "", false); err != nil {
 			t.Fatalf("5xx=%v: want success on third attempt, got %v", status5xx, err)
 		}
 		if len(*ids) != 3 || (*ids)[0] == "" || (*ids)[0] != (*ids)[1] || (*ids)[1] != (*ids)[2] {
@@ -65,7 +65,7 @@ func TestSendFeedbackDirectRetriesDroppedConnection(t *testing.T) {
 func TestSendFeedbackDirectGivesUp(t *testing.T) {
 	srv, ids := relayStub(t, 99, false)
 	withRelay(t, srv.URL)
-	err := (&app{}).sendFeedbackDirect("t", "body", nil)
+	_, err := (&app{}).sendFeedbackDirect("t", "body", nil, "", false)
 	if err == nil || !strings.Contains(err.Error(), "無法連到回報服務") {
 		t.Fatalf("want connection error, got %v", err)
 	}
@@ -82,7 +82,7 @@ func TestSendFeedbackDirectNoRetryOnRelayError(t *testing.T) {
 	}))
 	defer srv.Close()
 	withRelay(t, srv.URL)
-	err := (&app{}).sendFeedbackDirect("t", "body", nil)
+	_, err := (&app{}).sendFeedbackDirect("t", "body", nil, "", false)
 	if err == nil || err.Error() != feedbackSendErrors["daily_limit"] || n != 1 {
 		t.Fatalf("want one attempt and the daily-limit message, got %d attempts, %v", n, err)
 	}

@@ -364,6 +364,7 @@ func (a *app) bindUI() {
 		}
 		a.initializeLocalState()
 		a.loadJobsOnce.Do(a.loadJobs)
+		a.startReplyPolling()
 		return uiInit{Jobs: a.jobViews(), Failed: a.failedViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
 			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, DirectSend: feedbackEndpoint != "", LogFile: a.dataFolder(), DataDefault: defaultDataFolder()}
 	})
@@ -435,6 +436,7 @@ func (a *app) bindUI() {
 	})
 	_ = w.Bind("goPickImages", func() []feedbackImage { return a.pickFeedbackImages() })
 	_ = w.Bind("goSubmitFeedback", func(fb feedbackRequest) (feedbackResult, error) { return a.submitFeedback(fb) })
+	_ = w.Bind("goReplyAction", func(thread, rid, action string) { a.replyAction(thread, rid, action) })
 }
 
 func (a *app) applyRequestToSettings(req startRequest) {

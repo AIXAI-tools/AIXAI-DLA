@@ -498,7 +498,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
   <div class="dlg-h"><h3>版本更新／切換</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
   <div class="dlg-b">
     <p style="margin-top:0">目前使用 <b id="curVer"></b>。可更新到新版本，或退回先前的穩定版本；每個檔案都會先核對 SHA256 才替換。</p>
-    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 啟動時自動檢查新版本（連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 自動檢查新版本（啟動時，以及程式開著時每 6 小時；連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
     <div id="relState" class="note">正在讀取版本清單…</div>
     <div id="relList"></div>
     <div id="updProgress" class="hidden" style="margin-top:12px">
@@ -546,6 +546,8 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
       <div class="chips" id="fbLogs"></div>
     </div>
     <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
+    <label class="checks" id="fbReplyRow" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="fbWantReply" checked style="margin-top:3px"> 接收開發者的回覆（僅限「直接送出」）：程式開著時約每 6 小時用這份回報的編號向回報服務查詢一次（只送出編號），有回覆時會跳出通知，例如「已修正，請更新」或「請幫忙測試」。</span></label>
+    <div class="banner show ok hidden" id="fbRef"></div>
     <div class="note" id="fbWhere"></div>
     <div class="banner" id="fbResult"></div>
   </div>
@@ -554,6 +556,17 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
     <button class="btn" id="btnFbGitHub">透過 GitHub 回報</button>
     <button class="btn primary" id="btnFbSend">直接送出</button>
   </div>
+</dialog>
+
+<!-- ================= reply to a report ================= -->
+<dialog id="dlgReply">
+  <div class="dlg-h"><h3 id="rpHead">開發者的回覆</h3><div class="spacer"></div><button class="btn ghost sm" id="rpLater">稍後再看</button></div>
+  <div class="dlg-b">
+    <div class="note" id="rpAbout"></div>
+    <div id="rpText" style="white-space:pre-wrap;line-height:1.7;margin:14px 0;overflow-wrap:anywhere"></div>
+    <div id="rpUrls" style="font:12.5px/1.6 var(--mono);overflow-wrap:anywhere;color:var(--muted)"></div>
+  </div>
+  <div class="dlg-f" id="rpActs"></div>
 </dialog>
 
 <!-- ================= disclaimer / terms ================= -->
@@ -690,6 +703,7 @@ function fillForm(init){
     + `<b>透過 GitHub 回報</b>：公開在專案的 GitHub Issues（<span style="font-family:var(--mono)">${esc(init.repo)}</span>），需要 GitHub 帳號；會在瀏覽器開啟已填好的回報頁，並開啟附件所在資料夾，把檔案拖進去即可。`
     + `<br><b>複製回報內容</b>：整理好的內容複製到剪貼簿，可貼到任何聊天或信件。`;
   $("btnFbSend").classList.toggle("hidden", !init.directSend);
+  $("fbReplyRow").classList.toggle("hidden", !init.directSend);
   $("btnFbGitHub").classList.toggle("primary", !init.directSend);
   refreshDependent();
 }
@@ -960,6 +974,7 @@ window.aixai={ on(name,p){
     case "snip": onSnip(p||{}); break;
     case "releases": renderReleases(p); break;
     case "update": renderUpdate(p); break;
+    case "replies": queueReplies(p); break;
   }
 }};
 
@@ -982,6 +997,16 @@ function renderReleases(r){
   const sync=()=>{ const sel=document.querySelector('input[name=rel]:checked'); const it=sel&&r.items.find(x=>x.tag===sel.value);
     $("btnInstall").disabled=!it; $("btnInstall").textContent = !it ? "安裝所選版本" : (it.newer ? `更新到 ${it.tag}` : `退回到 ${it.tag}`); };
   $("relList").onchange=sync; sync();
+  if(state.preselectTag){ // opened from a reply: select that version
+    const tag=state.preselectTag; state.preselectTag=null;
+    const radio=[...document.querySelectorAll("input[name=rel]")].find(x=>x.value===tag);
+    if(radio && !radio.disabled){ radio.checked=true; sync(); }
+    else $("relState").textContent+=`（版本清單中找不到可安裝的 ${tag}）`;
+  }
+  if(newer.length && state.notifiedTag!==newer[0].tag && !$("dlgUpdate").open){
+    state.notifiedTag=newer[0].tag;
+    toast(`有新版本 ${newer[0].tag}，可按右上角「版本」更新`);
+  }
 }
 $("btnInstall").onclick=()=>{
   const sel=document.querySelector('input[name=rel]:checked'); if(!sel) return;
@@ -1041,13 +1066,93 @@ async function sendFeedback(channel){
   const sendBtn=$("btnFbSend");
   if(channel==="send"){ sendBtn.disabled=true; sendBtn.textContent="送出中…"; }
   try{
-    const res=await goSubmitFeedback({kind:state.kind,text:$("fbText").value,contact:$("fbContact").value,includeDiag:$("fbDiag").checked,images:state.images.map(i=>i.path),logs:state.logs.map(l=>l.path),channel});
+    const res=await goSubmitFeedback({kind:state.kind,text:$("fbText").value,contact:$("fbContact").value,includeDiag:$("fbDiag").checked,images:state.images.map(i=>i.path),logs:state.logs.map(l=>l.path),channel,
+      wantReply:channel==="send"&&$("fbWantReply").checked, ref:state.fbRef||""});
     const b=$("fbResult"); b.className="banner show ok"; b.textContent=res.message;
-    if(channel==="send"){ $("fbText").value=""; state.images=[]; state.logs=[]; renderThumbs(); renderLogs(); }
+    if(channel==="send"){ $("fbText").value=""; state.images=[]; state.logs=[]; renderThumbs(); renderLogs(); setFeedbackRef(null); }
   }catch(e){ const b=$("fbResult"); b.className="banner show err"; b.textContent=String(e); }
   finally{ sendBtn.disabled=false; sendBtn.textContent="直接送出"; }
 }
 $("btnFbSend").onclick=()=>sendFeedback("send");
+/* A report that follows up an earlier one (reply to the developer, test result). */
+function setFeedbackRef(n){
+  state.fbRef=n?n.thread:"";
+  const el=$("fbRef"); el.classList.toggle("hidden",!n); el.textContent="";
+  if(!n) return;
+  el.append(`這份回報會接續你在 ${n.sent} 回報的「${n.title}」（開發者會看到是同一件事）。`);
+  const x=mkBtn("不接續",()=>setFeedbackRef(null)); x.style.marginLeft="8px"; el.append(x);
+}
+function openFeedbackFor(n,text){
+  setFeedbackRef(n);
+  if(!$("fbText").value.trim()) $("fbText").value=text;
+  $("fbWantReply").checked=true;
+  openFeedback();
+  const t=$("fbText"); t.setSelectionRange(t.value.length,t.value.length);
+}
+
+/* ---------------- replies to reports ---------------- */
+state.replyQueue=[]; state.replyDone=new Set();
+const REPLY_HEAD={fixed:"已修正",test:"請幫忙測試",info:"需要更多資訊",wontfix:"無法處理"};
+function queueReplies(list){
+  (list||[]).forEach(n=>{
+    n.k=n.thread+"|"+n.reply.rid+"|"+n.stage;
+    if(!state.replyDone.has(n.k) && !state.replyQueue.some(q=>q.k===n.k)) state.replyQueue.push(n);
+  });
+  maybeShowReply();
+}
+function replyBusy(){ return Object.values(state.jobs).some(j=>j.status==="running") || !!document.querySelector("dialog[open]"); }
+function maybeShowReply(){
+  if(!state.replyQueue.length || $("dlgReply").open) return;
+  if(replyBusy()){
+    showBanner("ok",`開發者回覆了你的回報（${state.replyQueue.length} 則）。`,[mkBtn("查看",()=>{ hideBanner(); openReply(); })]);
+    return;
+  }
+  openReply();
+}
+// A reply that came in during a download opens once everything is idle.
+setInterval(()=>{ if(state.replyQueue.length && !replyBusy()){ hideBanner(); openReply(); } },30000);
+function fillURLs(list){
+  const cur=$("urls").value.trim();
+  $("urls").value=(cur?cur+"\n":"")+list.join("\n");
+  $("urls").dispatchEvent(new Event("input"));
+  toast("已填入網址，按「開始下載」即可");
+}
+function openUpdateTo(tag){ state.preselectTag=tag; $("btnUpdate").click(); }
+function openReply(){
+  const n=state.replyQueue[0]; if(!n || $("dlgReply").open) return;
+  const r=n.reply, follow=n.stage==="testFollowup";
+  $("rpHead").textContent=follow?"測試結果":"開發者的回覆："+(REPLY_HEAD[r.kind]||"");
+  $("rpAbout").textContent=`你在 ${n.sent} 回報的：「${n.title}」`+(state.replyQueue.length>1?`（還有 ${state.replyQueue.length-1} 則）`:"");
+  $("rpText").textContent=follow
+    ? `你正在使用測試版 ${r.version}。試過之後結果如何？告訴開發者，就能決定是否放進正式版。\n\n開發者當時的說明：\n${r.text}`
+    : r.text;
+  const urls=r.kind==="test"?(r.urls||[]):[];
+  $("rpUrls").textContent=urls.length?"測試網址：\n"+urls.join("\n"):"";
+  const acts=$("rpActs"); acts.innerHTML="";
+  const add=(label,fn,primary)=>{ const b=mkBtn(label,fn); b.classList.remove("sm"); if(primary) b.classList.add("primary"); acts.appendChild(b); };
+  const done=(action,then)=>{ goReplyAction(n.thread,r.rid,action); state.replyDone.add(n.k); state.replyQueue.shift(); $("dlgReply").close(); if(then) then(); setTimeout(maybeShowReply,400); };
+  if(follow){
+    add("還沒試",()=>done("later"));
+    add("還是不行",()=>done("testFail",()=>openFeedbackFor(n,`測試結果（${r.version}，${n.title}）：還是不行。\n\n`)));
+    add("可以了",()=>done("testOK",()=>openFeedbackFor(n,`測試結果（${r.version}，${n.title}）：可以了，問題已解決。\n`)),true);
+  } else if(r.kind==="fixed"){
+    const failed=n.urls||[];
+    if(n.newer){ add("知道了",()=>done("ack")); add(`更新到 ${r.version}`,()=>done("ack",()=>openUpdateTo(r.version)),true); }
+    else if(failed.length){ add("知道了",()=>done("ack")); add(`重試當時失敗的網址（${failed.length} 個）`,()=>done("ack",()=>fillURLs(failed)),true); }
+    else add("知道了",()=>done("ack"),true);
+  } else if(r.kind==="test"){
+    if(urls.length) add("填入測試網址",()=>fillURLs(urls));
+    if(n.newer) add(`安裝測試版 ${r.version}`,()=>done("ack",()=>openUpdateTo(r.version)),true);
+    else add("知道了，開始測試",()=>done("ack",()=>queueReplies([{...n,stage:"testFollowup"}])),true);
+  } else if(r.kind==="info"){
+    add("回覆開發者",()=>done("ack",()=>openFeedbackFor(n,`回覆開發者（${n.title}）：\n\n`)),true);
+  } else {
+    add("知道了",()=>done("ack"),true);
+  }
+  $("rpLater").onclick=()=>done("later");
+  $("dlgReply").oncancel=e=>{ e.preventDefault(); done("later"); };
+  $("dlgReply").showModal();
+}
 $("btnFbGitHub").onclick=()=>sendFeedback("github");
 $("btnFbCopy").onclick=()=>sendFeedback("copy");
 document.querySelectorAll("dialog [data-close]").forEach(b=>b.onclick=()=>b.closest("dialog").close());
@@ -1078,6 +1183,8 @@ $("btnTerms").onclick=()=>openTerms(false);
   const init=await goInit(); state.init=init; fillForm(init);
   if(init.settings.disclaimer_accepted !== TERMS_VERSION) openTerms(true); else $("urls").focus();
   if(!init.settings.no_startup_update_check) goCheckUpdates(); // quietly mark the 版本 button when a newer release exists
+  // Many people leave the program open for days: check again every 6 hours.
+  setInterval(()=>{ if($("startupUpdCheck").checked && !$("dlgUpdate").open) goCheckUpdates(); },6*3600*1000);
 })();
 </script>
 </body>

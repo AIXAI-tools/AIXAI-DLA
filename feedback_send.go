@@ -40,6 +40,10 @@ type feedbackUpload struct {
 	Title string               `json:"title"`
 	Body  string               `json:"body"`
 	Files []feedbackUploadFile `json:"files"`
+	// Ref is the earlier report this one follows up; WantReply tells the
+	// developer whether the program will look for a reply.
+	Ref       string `json:"ref,omitempty"`
+	WantReply bool   `json:"want_reply"`
 }
 
 // The web app sometimes hangs or drops the connection ("unexpected EOF")
@@ -61,26 +65,30 @@ var feedbackSendErrors = map[string]string{
 	"busy":           "回報服務忙碌中，請稍後再試。",
 }
 
-func (a *app) sendFeedbackDirect(title, body string, paths []string) error {
+// sendFeedbackDirect returns the report ID the relay stored.
+func (a *app) sendFeedbackDirect(title, body string, paths []string, ref string, wantReply bool) (string, error) {
 	if feedbackEndpoint == "" {
-		return errors.New("這個版本尚未設定直接送出，請改用 GitHub 回報或複製回報內容。")
+		return "", errors.New("這個版本尚未設定直接送出，請改用 GitHub 回報或複製回報內容。")
 	}
-	up := feedbackUpload{Pass: feedbackPass, Tool: updateRepoName, ID: newFeedbackID(), Title: title, Body: body}
+	up := feedbackUpload{Pass: feedbackPass, Tool: updateRepoName, ID: newFeedbackID(), Title: title, Body: body, WantReply: wantReply}
+	if replyIDRE.MatchString(ref) {
+		up.Ref = ref
+	}
 	total := 0
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return fmt.Errorf("讀取附件 %s 失敗：%v", filepath.Base(p), err)
+			return "", fmt.Errorf("讀取附件 %s 失敗：%v", filepath.Base(p), err)
 		}
 		total += len(data)
 		if total > maxFeedbackUpload {
-			return errors.New(feedbackSendErrors["too_large"])
+			return "", errors.New(feedbackSendErrors["too_large"])
 		}
 		up.Files = append(up.Files, feedbackUploadFile{Name: filepath.Base(p), Data: base64.StdEncoding.EncodeToString(data)})
 	}
 	payload, err := json.Marshal(up)
 	if err != nil {
-		return err
+		return "", err
 	}
 	var raw []byte
 	status := 0
@@ -92,7 +100,7 @@ func (a *app) sendFeedbackDirect(title, body string, paths []string) error {
 		}
 		req, err := http.NewRequest(http.MethodPost, feedbackSendURL, bytes.NewReader(payload))
 		if err != nil {
-			return err
+			return "", err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", appTitle+"/"+appVersion)
@@ -113,22 +121,22 @@ func (a *app) sendFeedbackDirect(title, body string, paths []string) error {
 		break
 	}
 	if lastErr != nil && status < 500 {
-		return fmt.Errorf("無法連到回報服務（已試 %d 次，請確認網路連線）：%v", feedbackAttempts, lastErr)
+		return "", fmt.Errorf("無法連到回報服務（已試 %d 次，請確認網路連線）：%v", feedbackAttempts, lastErr)
 	}
 	var res struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
 	if status != http.StatusOK || json.Unmarshal(raw, &res) != nil {
-		return fmt.Errorf("回報服務沒有正常回應（HTTP %d），請稍後再試或改用其他方式。", status)
+		return "", fmt.Errorf("回報服務沒有正常回應（HTTP %d），請稍後再試或改用其他方式。", status)
 	}
 	if !res.OK {
 		if msg := feedbackSendErrors[res.Error]; msg != "" {
-			return errors.New(msg)
+			return "", errors.New(msg)
 		}
-		return fmt.Errorf("回報服務拒絕了這次送出（%s），請改用其他方式。", res.Error)
+		return "", fmt.Errorf("回報服務拒絕了這次送出（%s），請改用其他方式。", res.Error)
 	}
-	return nil
+	return up.ID, nil
 }
 
 // newFeedbackID identifies one press of 直接送出 across retries.
