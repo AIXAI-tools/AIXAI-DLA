@@ -153,6 +153,21 @@ func (b *cdpBrowser) setHandler(h func(cdpWireMessage)) {
 	b.handlerMu.Unlock()
 }
 
+// pageTitle is the capture tab's title, or "" when the page has none (the tab
+// then shows its address).
+func (b *cdpBrowser) pageTitle() string {
+	reply, err := b.browserCall("Target.getTargetInfo", map[string]interface{}{"targetId": b.targetID})
+	if err != nil {
+		return ""
+	}
+	info, _ := reply.Result["targetInfo"].(map[string]interface{})
+	title := strings.TrimSpace(cdpString(info, "title"))
+	if title == "" || title == strings.TrimSpace(cdpString(info, "url")) || strings.HasPrefix(strings.ToLower(title), "http") {
+		return ""
+	}
+	return title
+}
+
 func (b *cdpBrowser) pageTargets() []string {
 	reply, err := b.browserCall("Target.getTargets", nil)
 	if err != nil {
@@ -332,7 +347,9 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	}
 	_ = b.send("Network.setCacheDisabled", map[string]interface{}{"cacheDisabled": true})
 	_ = b.send("Page.enable", nil)
-	_ = b.send("Runtime.enable", nil)
+	// Runtime.enable is not sent: nothing here listens to its events
+	// (Runtime.evaluate works without it), and anti-bot checks detect it and
+	// then keep repeating their "verify you are human" step.
 	// Pages must behave as if focused and visible even while minimised, or
 	// players may refuse to start.
 	_ = b.send("Emulation.setFocusEmulationEnabled", map[string]interface{}{"enabled": true})
@@ -781,6 +798,8 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	finish := func(c browserMediaCandidate) browserMediaCandidate {
 		c = withPageJSON(c)
 		c.Alternates = captureAlternates(seen, c.URL, isAd)
+		// Read now: the tab goes back to a blank page when the capture ends.
+		c.PageTitle = b.pageTitle()
 		return c
 	}
 	var settle *time.Timer

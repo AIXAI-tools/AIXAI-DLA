@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.0"
+	appVersion = "4.2.1"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1168,6 +1168,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// costs time and log lines, so go straight to the fallback chain.
 		host := urlHostKey(rawURL)
 		var err error
+		chunked := false
 		if site == "" && unsupportedHosts[host] {
 			a.postLog("ℹ 本批前面已確認 yt-dlp 不支援此網站，直接使用備援流程。\r\n")
 			err = errors.New("ERROR: Unsupported URL（本批已確認）")
@@ -1214,6 +1215,16 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
 			if buildErr != nil {
 				return buildErr
+			}
+			// The connection kept breaking mid-transfer: short ranged requests
+			// survive a connection that is cut or slowed after a while.
+			if isTransferDrop(err) && !userSetChunkSize(cfg.ExtraArgs) {
+				chunked = true
+				a.postLog("→ 下載中連線多次中斷，重試時改用分段下載（每段 " + transferDropChunk + "）。\r\n")
+				a.diagNote("連線多次中斷，改用分段下載")
+			}
+			if chunked {
+				retryArgs = insertBeforeLast(retryArgs, "--http-chunk-size", transferDropChunk)
 			}
 			a.postStatus(fmt.Sprintf("狀態：環境檢查完成，正在重試第 %d/%d 個網址…", i+1, len(urls)))
 			retryErr := a.runCommand(ctx, retryArgs)
@@ -1271,6 +1282,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
 			if buildErr == nil {
 				retryArgs = addSiteCompatibilityArgs(retryArgs, site)
+				if chunked || (isTransferDrop(err) && !userSetChunkSize(cfg.ExtraArgs)) {
+					retryArgs = insertBeforeLast(retryArgs, "--http-chunk-size", transferDropChunk)
+				}
 				err = a.runCommand(ctx, retryArgs)
 				a.diagRecord("網站相容模式", err)
 				if err == nil {
@@ -1278,6 +1292,26 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				}
 			}
 		}
+
+		// A page behind an anti-bot check refuses yt-dlp's plain request but
+		// opens for a normal browser connection: retry with a browser-like
+		// connection; a page that then opens but has no known player goes on
+		// to the fallback chain below (Unsupported URL).
+		if err != nil && !a.stopRequested.Load() && site == "" && isAntiBotChallenge(err) {
+			a.postLog("⚠ 網站拒絕一般連線（防機器人檢查），改用瀏覽器連線方式重試。\r\n")
+			a.postStatus("狀態：正在改用瀏覽器連線方式重試…")
+			retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg)
+			if buildErr == nil {
+				err = a.runCommand(ctx, insertBeforeLast(retryArgs, "--impersonate", "chrome"))
+				a.diagRecord("瀏覽器連線方式", err)
+				if err == nil {
+					a.postLog("✓ 改用瀏覽器連線方式後下載成功。\r\n")
+				}
+			}
+		}
+		// Still refused: only a real browser gets in, which the fallback chain's
+		// browser capture is.
+		antiBot := err != nil && !a.stopRequested.Load() && site == "" && isAntiBotChallenge(err)
 
 		// TikTok has several URL families that change independently of yt-dlp.
 		// For non-Unsupported errors, give the TikTok-specific crawler one chance
@@ -1319,7 +1353,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// A site yt-dlp knows but whose page it could not read this time (one
 		// video of the site, or after a site change) gets the same fallback
 		// chain; the site itself stays marked as supported for later items.
-		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && isExtractorFailure(err) {
+		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && (isExtractorFailure(err) || antiBot) {
 			a.postLog("⚠ yt-dlp 無法解析此頁面，改用 AIXAI 多引擎備援流程。\r\n")
 			a.postStatus("狀態：yt-dlp 無法解析此頁面，正在嘗試備援解析…")
 			if fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg); fallbackErr == nil {
@@ -1468,6 +1502,15 @@ func urlHostKey(raw string) string {
 // errStopped is returned by a download step that ended because 停止 was
 // pressed, so no caller mistakes the interrupted step for a finished one.
 var errStopped = errors.New("已停止")
+
+// isAntiBotChallenge reports a page refused by an anti-bot check in front of
+// the site (not a login, region or rate limit).
+func isAntiBotChallenge(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "anti-bot challenge")
+}
 
 func isUnsupportedURL(err error) bool {
 	if err == nil {

@@ -186,6 +186,23 @@ func (a *app) repairTruncatedDownload(ctx context.Context, cfg settings) error {
 	return errors.New("下載的影片不完整（只有開頭片段），分段重新下載後仍未取得完整檔案。")
 }
 
+// transferDropChunk is the chunk size used after the connection kept breaking
+// in the middle of a download.
+const transferDropChunk = "10M"
+
+// isTransferDrop reports a download that failed because the connection broke
+// or stalled mid-transfer after yt-dlp's own retries, as opposed to a refusal.
+func isTransferDrop(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "bytes read") && strings.Contains(lower, "more expected") {
+		return true
+	}
+	return strings.Contains(lower, "giving up after") && (strings.Contains(lower, "read timed out") || strings.Contains(lower, "connection reset") || strings.Contains(lower, "incompleteread"))
+}
+
 // userSetChunkSize reports whether the user's own extra args already choose a
 // chunk size; the automatic retry then leaves it alone.
 func userSetChunkSize(extra string) bool {

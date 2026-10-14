@@ -33,9 +33,12 @@ type browserCaptureEvent struct {
 }
 
 type browserMediaCandidate struct {
-	URL            string
-	PageURL        string
-	Title          string
+	URL     string
+	PageURL string
+	Title   string
+	// PageTitle is the capture tab's title, used for the file name only when
+	// nothing else names the video.
+	PageTitle      string
 	Kind           string
 	RequestType    string
 	RequestHeaders map[string]string
@@ -363,6 +366,24 @@ func replaceOutputTemplate(args []string, tmpl string) []string {
 	return out
 }
 
+// capturedFileBase names a captured video: as before, except that a video
+// that would otherwise be "Captured_Video_<time>" takes the page's title,
+// shortened so the full path stays playable (path_length.go).
+func capturedFileBase(rawURL string, c browserMediaCandidate, dir string) string {
+	base := capturedOutputBase(rawURL, c.Title)
+	if strings.TrimSpace(c.Title) != "" || !strings.HasPrefix(base, "Captured_Video_") {
+		return base
+	}
+	name := []rune(safeWindowsBaseName(c.PageTitle))
+	if len(name) == 0 {
+		return base
+	}
+	if limit := titleBudget(dir, 0) + pathIDReserve; len(name) > limit {
+		name = []rune(strings.TrimRight(string(name[:limit]), " ."))
+	}
+	return string(name)
+}
+
 func capturedOutputBase(rawURL, title string) string {
 	if dramaID, ep, ok := parseTikTokShortDramaURL(rawURL); ok {
 		if clean := safeWindowsBaseName(title); clean != "" {
@@ -427,7 +448,7 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	if err != nil {
 		return err
 	}
-	base := capturedOutputBase(rawURL, candidate.Title)
+	base := capturedFileBase(rawURL, candidate, output)
 	args = replaceOutputTemplate(args, base+".%(ext)s")
 
 	headers := candidate.RequestHeaders
@@ -449,7 +470,13 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	}
 	a.postLog(fmt.Sprintf("✓ 瀏覽器偵測到 %s 媒體串流（%s），正在交由 yt-dlp 下載。\r\n", candidate.Kind, hostOnly(candidate.URL)))
 	a.postStatus("狀態：已捕捉實際媒體串流，正在下載…")
-	if err := a.runCommand(ctx, args); err == nil {
+	err = a.runCommand(ctx, args)
+	if err != nil && isAntiBotChallenge(err) && !a.stopRequested.Load() && ctx.Err() == nil {
+		// The media server sits behind the same anti-bot check as the page.
+		a.postLog("⚠ 媒體伺服器拒絕一般連線（防機器人檢查），改用瀏覽器連線方式重試。\r\n")
+		err = a.runCommand(ctx, insertBeforeLast(args, "--impersonate", "chrome"))
+	}
+	if err == nil {
 		for _, f := range a.lastYtFiles {
 			if validFile(f, 1) {
 				a.lastCaptureFile = f
@@ -483,7 +510,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 	if err := os.MkdirAll(output, 0755); err != nil {
 		return err
 	}
-	base := capturedOutputBase(rawURL, candidate.Title)
+	base := capturedFileBase(rawURL, candidate, output)
 	ext := ".mp4"
 	if mode == 1 {
 		ext = ".mp3"
@@ -551,9 +578,11 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 		}
 		a.diagNote("其他串流：" + describeCaptureCandidate(alt))
 	}
+	pageTitle := candidate.PageTitle
 	candidate = a.upgradeToBestVariant(candidate, mode)
 	// download fetches one captured stream and checks the file.
 	download := func(c browserMediaCandidate) error {
+		c.PageTitle = pageTitle
 		a.resetOutputs()
 		err := a.downloadBrowserCapturedMedia(ctx, rawURL, c, mode, formatID, output, cfg)
 		if err == nil && !a.stopRequested.Load() {

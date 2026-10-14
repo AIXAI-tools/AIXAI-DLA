@@ -36,6 +36,7 @@ var briefRules = []briefRule{
 	{[]string{"http error 429", "too many requests"}, "請求太頻繁，被網站暫時限制，請稍後再試"},
 	{[]string{"http error 404", "404: not found", "404 not found"}, "找不到影片（404）：可能已刪除，或網址錯誤"},
 	{[]string{"http error 410"}, "影片已被移除（410）"},
+	{[]string{"anti-bot challenge"}, "網站的防機器人檢查拒絕了連線，瀏覽器擷取也未能取得影片"},
 	{[]string{"http error 403", "403: forbidden", "403 forbidden"}, "網站拒絕存取（403）：可能需要登入、有地區限制，或連結已過期"},
 	{[]string{"video unavailable", "this video is not available", "has been removed", "no longer available", "content isn't available", "content is not available"},
 		"影片已無法觀看：可能已刪除或下架"},

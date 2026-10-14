@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,5 +87,28 @@ func TestBrowserKeyForProgID(t *testing.T) {
 		if got, _ := browserKeyForProgID(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestIsTransferDrop(t *testing.T) {
+	cases := map[string]bool{
+		"ERROR: [download] Got error: 1011731 bytes read, 299780113 more expected. Giving up after 10 retries":                                  true,
+		"ERROR: [download] Got error: HTTPSConnectionPool(host='x', port=443): Read timed out. (read timeout=20.0). Giving up after 10 retries": true,
+		"ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge":                                                           false,
+		"ERROR: unable to download video data: HTTP Error 403: Forbidden":                                                                       false,
+	}
+	for msg, want := range cases {
+		if got := isTransferDrop(errors.New(msg)); got != want {
+			t.Errorf("isTransferDrop(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
+func TestIsAntiBotChallenge(t *testing.T) {
+	if !isAntiBotChallenge(errors.New(`ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; try again with  --extractor-args "generic:impersonate"`)) {
+		t.Error("anti-bot challenge not detected")
+	}
+	if isAntiBotChallenge(errors.New("ERROR: HTTP Error 403: Forbidden")) {
+		t.Error("plain 403 detected as anti-bot challenge")
 	}
 }

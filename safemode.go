@@ -180,7 +180,7 @@ func safeModeIntro(urls []string, cfg settings) string {
 				map[bool]string{true: fmt.Sprintf("，每 %d 個休息 %d–%d 分鐘", t.batchSize, int(t.breakMin.Minutes()), int(t.breakMax.Minutes())), false: ""}[t.batchSize > 0]))
 		}
 	}
-	return "🛡 帳號安全模式已開啟：" + strings.Join(parts, "；") + "。偵測到限流或驗證時會立即停止整批，不自動重試。\r\n"
+	return "🛡 帳號安全模式已開啟：" + strings.Join(parts, "；") + "。偵測到限流或帳號驗證時會立即停止整批，不自動重試。\r\n"
 }
 
 func blockStopError(err error) error {

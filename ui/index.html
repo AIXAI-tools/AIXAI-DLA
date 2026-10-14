@@ -579,11 +579,11 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
     <h4>2. 嚴禁的用途</h4>
     <ul>
       <li>未經授權重製、散布、公開傳輸、販售或以其他方式利用他人受著作權保護的內容；</li>
-      <li>規避、破解或移除 DRM、加密、付費牆、存取控制或其他防盜拷措施；</li>
+      <li>規避、破解或移除 DRM、加密、付費牆、登入或地區限制，或其他防盜拷措施；</li>
       <li>取得你沒有合法觀看權限的內容；任何商業用途，或違反網站條款、隱私或其他法律的行為。</li>
     </ul>
     <h4>3. 本工具不做的事</h4>
-    <p>本工具<b>不破解 DRM、不繞過付費牆或存取控制</b>；<b>不提供、不儲存、不索引、不推薦</b>任何影音內容或網址清單，所有網址由使用者自行輸入；本專案<b>不以營利為目的</b>，不收費、不含廣告。</p>
+    <p>本工具<b>不破解 DRM、不繞過付費牆、登入或地區限制</b>；<b>不提供、不儲存、不索引、不推薦</b>任何影音內容或網址清單，所有網址由使用者自行輸入；本專案<b>不以營利為目的</b>，不收費、不含廣告。</p>
     <h4>4. 你的責任</h4>
     <p>你須自行確認擁有合法權利，並遵守所在地法律（包括中華民國著作權法第 80 條之 2、第 87 條等）及各網站服務條款。因使用本工具所生之法律責任、賠償、帳號限制或封鎖及其他損失，概由你自行承擔；如因你違反本條款致作者或貢獻者遭第三人請求，你同意於法律允許範圍內負責處理並賠償。</p>
     <h4>5. 帳號風險</h4>
@@ -1158,7 +1158,7 @@ $("btnFbCopy").onclick=()=>sendFeedback("copy");
 document.querySelectorAll("dialog [data-close]").forEach(b=>b.onclick=()=>b.closest("dialog").close());
 
 /* ---------------- terms / disclaimer ---------------- */
-const TERMS_VERSION = "2026-10-05";
+const TERMS_VERSION = "2026-10-14";
 function openTerms(required){
   const d=$("dlgTerms"); d.dataset.required = required ? "1" : "";
   $("termsVer").textContent = "版本 " + TERMS_VERSION;

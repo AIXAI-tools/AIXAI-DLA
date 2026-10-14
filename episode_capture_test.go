@@ -120,3 +120,24 @@ func TestEpisodeGuardPrefersUnusedStream(t *testing.T) {
 		t.Fatal("the unused stream must win")
 	}
 }
+
+func TestCapturedFileBasePageTitle(t *testing.T) {
+	c := browserMediaCandidate{PageTitle: "Some Video: Title | Site"}
+	if got := capturedFileBase("https://x/v/abc-123", c, `C:\Videos`); got != "Some Video_ Title _ Site" {
+		t.Errorf("page title name = %q", got)
+	}
+	// Episode names keep their own rule.
+	if got := capturedFileBase("https://x/play/16465/12", c, `C:\Videos`); got != "16465_E012" {
+		t.Errorf("episode name = %q", got)
+	}
+	// No page title: unchanged fallback.
+	if got := capturedFileBase("https://x/v/abc-123", browserMediaCandidate{}, `C:\Videos`); !strings.HasPrefix(got, "Captured_Video_") {
+		t.Errorf("fallback name = %q", got)
+	}
+	// A long title is shortened for a deep folder.
+	long := browserMediaCandidate{PageTitle: strings.Repeat("長", 300)}
+	dir := `C:\` + strings.Repeat("d", 120)
+	if got := capturedFileBase("https://x/v/abc-123", long, dir); pathUnits(dir)+1+pathUnits(got)+pathSuffixReserve > maxPlayablePath {
+		t.Errorf("name too long for folder: %d", pathUnits(got))
+	}
+}
