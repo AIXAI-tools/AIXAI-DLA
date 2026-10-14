@@ -53,6 +53,9 @@ type job struct {
 	Message  string    `json:"message,omitempty"`
 	LogFile  string    `json:"logFile,omitempty"`
 	Created  time.Time `json:"created"`
+	// AutoResume marks a task paused only for a version update; the updated
+	// program resumes it (tasks the user paused are left paused).
+	AutoResume bool `json:"autoResume,omitempty"`
 
 	notes  []string // shown once, when the task first starts
 	status string   // latest status line while running
@@ -156,8 +159,10 @@ func (a *app) saveJobsLocked() {
 	}
 }
 
-// loadJobs restores the tasks left unfinished last time, all paused.
-func (a *app) loadJobs() {
+// loadJobs restores the tasks left unfinished last time, all paused, except
+// the tasks paused for a version update, which are queued again right after
+// that update. Returns how many were queued again.
+func (a *app) loadJobs() (resumed int) {
 	data, err := os.ReadFile(a.jobsPath())
 	if err != nil {
 		return
@@ -184,6 +189,13 @@ func (a *app) loadJobs() {
 			j.State = jobPaused
 			j.Message = "上次關閉程式時尚未完成，按「繼續」接著下載。"
 		}
+		if j.AutoResume {
+			if j.State == jobPaused && launchedByUpdate() {
+				j.State, j.Message = jobQueued, ""
+				resumed++
+			}
+			j.AutoResume = false
+		}
 		if j.Pos < 0 || j.Pos > len(j.URLs) {
 			j.Pos = 0
 		}
@@ -192,6 +204,7 @@ func (a *app) loadJobs() {
 			a.nextJobID = j.ID
 		}
 	}
+	return resumed
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +434,9 @@ func (a *app) finishJob(j *job, w *app, err error) {
 	case stopped:
 		j.State, j.Pos = jobPaused, pos
 		j.Message = fmt.Sprintf("已暫停：按「繼續」從第 %d/%d 項接著下載，未完成的檔案會保留。", pos+1, len(j.URLs))
+		if j.AutoResume {
+			j.Message = updatePauseMessage
+		}
 		final = "=== 任務已暫停 ==="
 	case err == nil:
 		j.State, j.Pos, j.Message = jobDone, len(j.URLs), "全部完成。"
@@ -474,10 +490,12 @@ func (a *app) jobAction(id int, action string) string {
 		case jobQueued:
 			j.State, j.Message = jobPaused, "已暫停，按「繼續」重新排入佇列。"
 		}
+		j.AutoResume = false
 	case "resume":
 		if j.State == jobPaused || j.State == jobFailed {
 			j.State, j.Message = jobQueued, ""
 		}
+		j.AutoResume = false
 	case "abort":
 		switch j.State {
 		case jobRunning:
@@ -513,6 +531,81 @@ func (a *app) jobAction(id int, action string) string {
 	a.emitJob(j)
 	a.schedule()
 	return ""
+}
+
+const updatePauseMessage = "為了更新版本暫時暫停，更新完會自動恢復。"
+
+// pauseAllJobs pauses every running and queued task (全部暫停). forUpdate
+// marks them to be resumed after the version update. Returns how many.
+func (a *app) pauseAllJobs(forUpdate bool) int {
+	a.jobsMu.Lock()
+	var workers []*app
+	n := 0
+	for _, j := range a.jobs {
+		switch j.State {
+		case jobRunning:
+			if j.stopAs == "" {
+				j.stopAs = jobPaused
+				workers = append(workers, j.worker)
+			}
+		case jobQueued:
+			j.State, j.Message = jobPaused, "已暫停，按「繼續」重新排入佇列。"
+			if forUpdate {
+				j.Message = updatePauseMessage
+			}
+		default:
+			continue
+		}
+		j.AutoResume = forUpdate
+		n++
+	}
+	a.saveJobsLocked()
+	a.jobsMu.Unlock()
+	for _, w := range workers {
+		if w != nil {
+			w.stopCurrent()
+		}
+	}
+	if n > 0 {
+		a.emitAllJobs()
+	}
+	return n
+}
+
+// resumeAllJobs queues paused tasks again (全部繼續); onlyAuto limits it to
+// the tasks paused for a version update. Returns how many.
+func (a *app) resumeAllJobs(onlyAuto bool) int {
+	a.jobsMu.Lock()
+	n := 0
+	for _, j := range a.jobs {
+		if onlyAuto && !j.AutoResume {
+			continue
+		}
+		if j.State == jobPaused {
+			j.State, j.Message = jobQueued, ""
+			n++
+		}
+		j.AutoResume = false
+	}
+	a.saveJobsLocked()
+	a.jobsMu.Unlock()
+	if n > 0 {
+		a.emitAllJobs()
+		a.schedule()
+	}
+	return n
+}
+
+// waitJobsStopped waits until no task is running.
+func (a *app) waitJobsStopped(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for a.anyJobRunning() {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return true
 }
 
 // clearFinishedJobs removes finished and aborted cards.

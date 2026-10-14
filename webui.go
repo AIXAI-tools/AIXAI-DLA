@@ -363,7 +363,12 @@ func (a *app) bindUI() {
 			presets = append(presets, uiOption{Value: p.Args, Label: label, Hint: hint})
 		}
 		a.initializeLocalState()
-		a.loadJobsOnce.Do(a.loadJobs)
+		a.loadJobsOnce.Do(func() {
+			if n := a.loadJobs(); n > 0 {
+				a.postLog(fmt.Sprintf("✓ 更新完成，自動恢復更新前暫停的 %d 個下載任務。\r\n", n))
+				go a.schedule()
+			}
+		})
 		a.startReplyPolling()
 		return uiInit{Jobs: a.jobViews(), Failed: a.failedViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
 			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, DirectSend: feedbackEndpoint != "", LogFile: a.dataFolder(), DataDefault: defaultDataFolder()}
@@ -371,6 +376,8 @@ func (a *app) bindUI() {
 	_ = w.Bind("goStart", a.startFromUI)
 	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
 	_ = w.Bind("goClearFinished", func() { a.clearFinishedJobs() })
+	_ = w.Bind("goPauseAll", func() int { return a.pauseAllJobs(false) })
+	_ = w.Bind("goResumeAll", func() int { return a.resumeAllJobs(false) })
 	_ = w.Bind("goFailedRetry", func(ids []int) string { return a.retryFailed(ids) })
 	_ = w.Bind("goFailedRemove", func(ids []int) { a.removeFailed(ids) })
 	_ = w.Bind("goHistoryList", func() []historyView { return a.historyViews() })

@@ -80,7 +80,7 @@ main{
   display:grid;gap:18px;grid-template-columns:minmax(380px,1fr) minmax(360px,1fr);align-items:start;
 }
 @media (max-width:1020px){ main{grid-template-columns:1fr} }
-@media (max-width:640px){ header .tag, .btn-label{display:none} main{padding:14px} }
+@media (max-width:680px){ header .tag, .btn-label{display:none} main{padding:14px} }
 
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
 .card-h{display:flex;align-items:center;gap:10px;padding:14px 18px 0}
@@ -132,7 +132,8 @@ textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent);
 .opt label{white-space:nowrap;cursor:pointer}
 .opt .t{font-weight:600}
 .opt .s{font-size:12.5px;color:var(--muted)}
-.opt input[type=number]{width:62px;min-height:32px;padding:4px 6px;text-align:center;flex:none}
+.opt input[type=number]{width:62px;min-height:32px;padding:4px 6px;text-align:center;flex:0 1 62px;min-width:44px}
+#seqBox{gap:8px;min-width:0}
 .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-bottom:14px}
 .shield{color:var(--ok)}
 
@@ -197,7 +198,7 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .job-f summary{cursor:pointer;font-size:12.5px;color:var(--muted)}
 .job .tasks{max-height:180px;margin-top:6px}
 .jobtag{font:600 11px var(--mono);color:var(--accent);margin-right:6px}
-.limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted)}
+.limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted);flex-wrap:wrap;justify-content:flex-end}
 .limit input{width:58px;height:30px;padding:0 6px}
 .field-h{display:flex;align-items:center;gap:4px;margin:0 0 6px}
 .field-h label.f{margin:0;flex:1}
@@ -439,6 +440,8 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
         <div class="card-h"><h2><span class="seal"></span>任務</h2>
           <div class="limit" title="最多同時下載幾個任務；同一網站的任務一律排隊，不會同時下載">
             <label for="maxJobs">同時執行</label><input type="number" id="maxJobs" min="1" max="8"><span>個</span>
+            <button class="btn ghost sm" id="btnPauseAll" title="暫停所有下載中與排隊中的任務" disabled>全部暫停</button>
+            <button class="btn ghost sm" id="btnResumeAll" title="繼續所有已暫停的任務" disabled>全部繼續</button>
             <button class="btn ghost sm" id="btnClearDone" title="移除已完成、已中止的任務">清除已完成</button>
           </div>
         </div>
@@ -498,7 +501,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
   <div class="dlg-h"><h3>版本更新／切換</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
   <div class="dlg-b">
     <p style="margin-top:0">目前使用 <b id="curVer"></b>。可更新到新版本，或退回先前的穩定版本；每個檔案都會先核對 SHA256 才替換。</p>
-    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 自動檢查新版本（啟動時，以及程式開著時每 6 小時；連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 自動檢查新版本（啟動時，以及程式開著時每 6 小時；有新版本會開啟此視窗；連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
     <div id="relState" class="note">正在讀取版本清單…</div>
     <div id="relList"></div>
     <div id="updProgress" class="hidden" style="margin-top:12px">
@@ -546,7 +549,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
       <div class="chips" id="fbLogs"></div>
     </div>
     <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
-    <label class="checks" id="fbReplyRow" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="fbWantReply" checked style="margin-top:3px"> 接收開發者的回覆（僅限「直接送出」）：程式開著時約每 6 小時用這份回報的編號向回報服務查詢一次（只送出編號），有回覆時會跳出通知，例如「已修正，請更新」或「請幫忙測試」。</span></label>
+    <label class="checks" id="fbReplyRow" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="fbWantReply" checked style="margin-top:3px"> 接收開發者的回覆（僅限「直接送出」）：程式開著時，送出後 24 小時內每 1 小時、之後約每 6 小時用這份回報的編號向回報服務查詢一次（只送出編號），有回覆時會跳出通知，例如「已修正，請更新」或「請幫忙測試」。</span></label>
     <div class="banner show ok hidden" id="fbRef"></div>
     <div class="note" id="fbWhere"></div>
     <div class="banner" id="fbResult"></div>
@@ -736,26 +739,46 @@ function setJobs(list){ const keep={}; list.forEach(v=>{ mergeJob(v); keep[v.id]
 function renderJobs(){
   const ul=$("jobs"); const list=Object.values(state.jobs).sort((a,b)=>a.id-b.id);
   const running=list.filter(j=>j.state==="running").length, queued=list.filter(j=>j.state==="queued").length;
+  $("btnPauseAll").disabled=!(running||queued); $("btnResumeAll").disabled=!list.some(j=>j.state==="paused");
   if(list.length) $("status").textContent = running||queued ? `執行中 ${running} 個任務${queued?`，排隊 ${queued} 個`:""}。` : "沒有執行中的任務。";
   if(!list.length){ ul.innerHTML='<li class="empty">尚無任務。貼上網址後按「開始下載」；下載中也可以繼續加入新任務。</li>'; return; }
   const icon={pending:"○",running:'<span class="spin"></span>',done:"✓",failed:"✕"};
-  ul.innerHTML=list.map(j=>{
+  // 原地更新每張任務卡片（不整段重建），項目清單的捲動位置、拖曳中的捲軸、展開狀態才不會每次更新就重設
+  const empty=ul.querySelector(":scope > li.empty"); if(empty) empty.remove();
+  const have={}; ul.querySelectorAll(":scope > li.job").forEach(li=>{ have[li.dataset.job]=li; });
+  const setHTML=(el,h)=>{ if(el._h!==h){ el._h=h; el.innerHTML=h; } };
+  let prev=null;
+  list.forEach(j=>{
     const total=j.items.length, done=j.items.filter(t=>t.state==="done").length, failed=j.items.filter(t=>t.state==="failed").length;
     const cur=j.items.find(t=>t.state==="running"); const part=cur&&cur.pct?cur.pct/100:0;
     const line = j.state==="running" ? (j.status||"") : j.state==="queued" ? (j.waiting||"等待開始…") : (j.message||"");
     const btns=(JOB_BTNS[j.state]||[]).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
       + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`
       + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
-    const items=j.items.map((t,i)=>`<li class="task ${t.state}"><span class="ic">${icon[t.state]||"○"}</span>
+    const items=j.items.map((t,i)=>`<span class="ic">${icon[t.state]||"○"}</span>
       <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.brief||t.msg)}</div>`:""}</div>
-      <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span></li>`).join("");
-    return `<li class="job ${j.state}">
-      <div class="job-h"><span class="t" title="${esc(j.title)}">${esc(j.title)}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
+      <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span>`);
+    const top=`<div class="job-h"><span class="t" title="${esc(j.title)}">${esc(j.title)}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
       ${j.state==="failed"&&j.brief?`<div class="job-s">${esc(j.brief)}</div><details class="raw"><summary>原始訊息</summary><pre>${esc(j.message||"")}</pre></details>`:(line?`<div class="job-s">${esc(line)}</div>`:"")}
-      <div class="bar"><i style="width:${total?((done+failed+part)/total*100):0}%"></i></div>
-      <div class="job-f">${btns}<details data-id="${j.id}" ${state.openJobs.has(j.id)?"open":""}><summary>項目（${total}）</summary><ul class="tasks">${items}</ul></details></div>
-    </li>`;
-  }).join("");
+      <div class="bar"><i style="width:${total?((done+failed+part)/total*100):0}%"></i></div>`;
+    let li=have[j.id]; delete have[j.id];
+    if(!li){
+      li=document.createElement("li"); li.dataset.job=j.id;
+      li.innerHTML=`<div class="job-top"></div><div class="job-f"><span class="job-btns" style="display:contents"></span><details data-id="${j.id}" ${state.openJobs.has(j.id)?"open":""}><summary></summary><ul class="tasks"></ul></details></div>`;
+    }
+    li.className="job "+j.state;
+    setHTML(li.querySelector(".job-top"), top);
+    setHTML(li.querySelector(".job-btns"), btns);
+    setHTML(li.querySelector(".job-f > details > summary"), `項目（${total}）`);
+    // 項目逐列更新（整個清單換掉會讓捲動錨定跑掉）
+    const tl=li.querySelector(".job-f .tasks");
+    while(tl.children.length>items.length) tl.lastElementChild.remove();
+    while(tl.children.length<items.length) tl.appendChild(document.createElement("li"));
+    items.forEach((h,i)=>{ const row=tl.children[i]; row.className="task "+j.items[i].state; setHTML(row,h); });
+    const want=prev?prev.nextSibling:ul.firstChild; if(li!==want) ul.insertBefore(li,want);
+    prev=li;
+  });
+  Object.values(have).forEach(li=>li.remove());
 }
 let rjTimer=0; function renderJobsSoon(){ if(!rjTimer) rjTimer=setTimeout(()=>{rjTimer=0;renderJobs();},250); }
 $("jobs").addEventListener("toggle",e=>{ const d=e.target; if(d.tagName!=="DETAILS") return; const id=+d.dataset.id; if(d.open) state.openJobs.add(id); else state.openJobs.delete(id); },true);
@@ -769,6 +792,8 @@ $("jobs").onclick=async e=>{
   const err=await goJobAction(id,act); if(err) toast(err);
 };
 $("btnClearDone").onclick=()=>goClearFinished();
+$("btnPauseAll").onclick=async()=>{ const n=await goPauseAll(); toast(n?`已暫停 ${n} 個任務`:"沒有下載中或排隊中的任務"); };
+$("btnResumeAll").onclick=async()=>{ const n=await goResumeAll(); toast(n?`已繼續 ${n} 個任務`:"沒有已暫停的任務"); };
 function showBanner(kind,msg,acts){ const b=$("banner"); b.className="banner show "+kind; b.textContent=msg; if(acts){const d=document.createElement("div");d.className="acts";acts.forEach(a=>d.appendChild(a));b.appendChild(d);} }
 function hideBanner(){ $("banner").className="banner"; }
 function mkBtn(label,fn){ const b=document.createElement("button"); b.className="btn sm"; b.textContent=label; b.onclick=fn; return b; }
@@ -1003,13 +1028,31 @@ function renderReleases(r){
     if(radio && !radio.disabled){ radio.checked=true; sync(); }
     else $("relState").textContent+=`（版本清單中找不到可安裝的 ${tag}）`;
   }
-  if(newer.length && state.notifiedTag!==newer[0].tag && !$("dlgUpdate").open){
+  // 有新版本：每次啟動、以及程式開著時每個新版本各跳出一次版本視窗（已自己打開就不再跳）
+  if(newer.length && state.notifiedTag!==newer[0].tag){
     state.notifiedTag=newer[0].tag;
-    toast(`有新版本 ${newer[0].tag}，可按右上角「版本」更新`);
+    if(!$("dlgUpdate").open){ state.updatePopup=true; maybeShowUpdate(); }
   }
 }
+function maybeShowUpdate(){
+  if(!state.updatePopup || document.querySelector("dialog[open]")) return; // 其他視窗開著時，等它關掉再跳
+  state.updatePopup=false;
+  $("dlgUpdate").showModal();
+}
+setInterval(maybeShowUpdate,30000);
+// 這個版本起，更新前暫停的任務會在更新後自動恢復；退回更舊的版本則不會
+const AUTO_RESUME_SINCE="4.2.2";
+function verLess(a,b){ const p=v=>String(v).replace(/^v/,"").split(/[.-]/).map(x=>parseInt(x,10)||0); const x=p(a),y=p(b);
+  for(let i=0;i<3;i++){ if((x[i]||0)!==(y[i]||0)) return (x[i]||0)<(y[i]||0); } return false; }
 $("btnInstall").onclick=()=>{
   const sel=document.querySelector('input[name=rel]:checked'); if(!sel) return;
+  const active=Object.values(state.jobs).filter(j=>j.state==="running"||j.state==="queued").length;
+  if(active){
+    const how = verLess(sel.value, AUTO_RESUME_SINCE)
+      ? `將暫時暫停所有的下載任務。退回的 ${sel.value} 不會自動恢復，切換版本後請到任務列表按「繼續」。`
+      : "將暫時暫停所有的下載任務，更新完會自動恢復！";
+    if(!confirm([`目前有 ${active} 個下載任務進行中。`, "", how, "（你自己暫停的任務維持暫停）", "", "確定要繼續嗎？"].join("\n"))) return;
+  }
   $("btnInstall").disabled=true; $("updProgress").classList.remove("hidden"); $("updBar").style.width="0"; $("updMsg").textContent="準備中…";
   goInstallRelease(sel.value);
 };
@@ -1182,8 +1225,9 @@ $("btnTerms").onclick=()=>openTerms(false);
   for(let i=0;i<50 && !window.goInit;i++) await new Promise(r=>setTimeout(r,20));
   const init=await goInit(); state.init=init; fillForm(init);
   if(init.settings.disclaimer_accepted !== TERMS_VERSION) openTerms(true); else $("urls").focus();
-  if(!init.settings.no_startup_update_check) goCheckUpdates(); // quietly mark the 版本 button when a newer release exists
-  // Many people leave the program open for days: check again every 6 hours.
+  if(!init.settings.no_startup_update_check) goCheckUpdates(); // a newer release opens the 版本 window (renderReleases)
+  // Many people leave the program open for days: check again every 6 hours,
+  // counted from this program's own start (not at the same time for everyone).
   setInterval(()=>{ if($("startupUpdCheck").checked && !$("dlgUpdate").open) goCheckUpdates(); },6*3600*1000);
 })();
 </script>

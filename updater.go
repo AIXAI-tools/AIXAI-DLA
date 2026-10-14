@@ -249,9 +249,20 @@ func (a *app) installReleaseAsync(tag string) {
 	fail := func(err error) {
 		a.updateStep("error", 0, err.Error())
 		a.postLog("⚠ 更新失敗：" + err.Error() + "\r\n")
+		if n := a.resumeAllJobs(true); n > 0 {
+			a.postLog(fmt.Sprintf("✓ 已恢復更新前暫停的 %d 個下載任務。\r\n", n))
+		}
 	}
-	if a.anyJobRunning() {
-		fail(errors.New("請先等目前的下載任務完成或暫停，再更新版本"))
+	// 下載中／排隊中的任務先暫停，更新後由新版本自動恢復（使用者自己暫停的不動）
+	pauseForUpdate := func() bool {
+		if n := a.pauseAllJobs(true); n > 0 {
+			a.updateStep("download", 0, fmt.Sprintf("正在暫停 %d 個下載任務…", n))
+			a.postLog(fmt.Sprintf("→ 為了更新版本，暫時暫停 %d 個下載任務；更新完會自動恢復。\r\n", n))
+		}
+		return a.waitJobsStopped(time.Minute)
+	}
+	if !pauseForUpdate() {
+		fail(errors.New("下載任務沒有在一分鐘內暫停，已取消更新"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.rootCtx, 15*time.Minute)
@@ -329,6 +340,12 @@ func (a *app) installReleaseAsync(tag string) {
 		return
 	}
 
+	// 下載新版期間使用者可能又按了「繼續」：替換前再暫停一次
+	if !pauseForUpdate() {
+		_ = os.Remove(newPath)
+		fail(errors.New("下載任務沒有在一分鐘內暫停，已取消更新"))
+		return
+	}
 	a.updateStep("swap", 100, "正在替換程式…")
 	oldPath := self + ".old"
 	_ = os.Remove(oldPath)
@@ -350,6 +367,16 @@ func (a *app) installReleaseAsync(tag string) {
 		return
 	}
 	a.ui.w.Dispatch(func() { procPostMessageW.Call(a.ui.hwnd, wmClose, 0, 0) })
+}
+
+// launchedByUpdate reports whether the in-app update started this process.
+func launchedByUpdate() bool {
+	for _, arg := range os.Args[1:] {
+		if strings.HasPrefix(arg, "--updated-from=") {
+			return true
+		}
+	}
+	return false
 }
 
 // fileBlockedBySystem reports whether Windows removed or refused to open the

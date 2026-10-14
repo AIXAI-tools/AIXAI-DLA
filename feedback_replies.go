@@ -30,18 +30,27 @@ import (
 // Reply text is shown as plain text; buttons only map to fixed actions.
 
 const (
-	replyFileName     = "feedback_replies.json"
+	replyFileName   = "feedback_replies.json"
+	replyFastWindow = 24 * time.Hour // a report counts as fresh this long after sending
+	replyKeepDays   = 60
+	replyMaxThreads = 20 // the relay answers at most 20 IDs per request
+	replyMaxURLs    = 10
+)
+
+// Variables only so tests can shorten them.
+var (
 	replyPollInterval = 6 * time.Hour
+	replyFastInterval = time.Hour // while a report is fresh
 	replyFirstPoll    = 20 * time.Second
-	replyKeepDays     = 60
-	replyMaxThreads   = 20 // the relay answers at most 20 IDs per request
-	replyMaxURLs      = 10
 )
 
 var (
 	replyPollOnce sync.Once
-	replyMu       sync.Mutex
-	replyIDRE     = regexp.MustCompile(`^[a-f0-9]{24}$`)
+	// replyKick wakes the polling loop when a new report is sent, so the
+	// fast interval starts right away instead of after the current wait.
+	replyKick = make(chan struct{}, 1)
+	replyMu   sync.Mutex
+	replyIDRE = regexp.MustCompile(`^[a-f0-9]{24}$`)
 	// Variable so tests can point it at a local server.
 	replyLookupURL = feedbackEndpoint
 )
@@ -141,6 +150,10 @@ func (a *app) recordReplyThread(id, title, ref string) {
 	list := a.loadReplyThreads()
 	list = append(list, replyThread{ID: id, Title: title, Sent: now, Version: appVersion, URLs: urls, Ref: ref, LastActive: now})
 	a.saveReplyThreads(pruneReplyThreads(list, now))
+	select {
+	case replyKick <- struct{}{}:
+	default:
+	}
 }
 
 func containsString(list []string, s string) bool {
@@ -198,11 +211,18 @@ func (a *app) flashMainWindow() {
 	procFlashWindowEx.Call(uintptr(unsafe.Pointer(&fi)))
 }
 
-// replyInterval is replyPollInterval, or AIXAI_TEST_REPLY_POLL_SECONDS
-// (at least 10) when testing that a running program picks up replies.
-func replyInterval() time.Duration {
+// replyInterval is how long to wait before the next poll: replyFastInterval
+// while an open report was sent within replyFastWindow, else
+// replyPollInterval; AIXAI_TEST_REPLY_POLL_SECONDS (at least 10) overrides
+// both when testing that a running program picks up replies.
+func replyInterval(list []replyThread, now time.Time) time.Duration {
 	if n, err := strconv.Atoi(os.Getenv("AIXAI_TEST_REPLY_POLL_SECONDS")); err == nil && n >= 10 {
 		return time.Duration(n) * time.Second
+	}
+	for _, t := range list {
+		if !t.Closed && now.Sub(t.Sent) < replyFastWindow {
+			return replyFastInterval
+		}
 	}
 	return replyPollInterval
 }
@@ -210,7 +230,6 @@ func replyInterval() time.Duration {
 // startReplyPolling runs for the life of the program.
 func (a *app) startReplyPolling() {
 	replyPollOnce.Do(func() {
-		interval := replyInterval()
 		go func() {
 			select {
 			case <-a.rootCtx.Done():
@@ -222,10 +241,19 @@ func (a *app) startReplyPolling() {
 				if a.pollRepliesOnce(a.rootCtx) {
 					a.emitReplyNotices()
 				}
-				select {
-				case <-a.rootCtx.Done():
-					return
-				case <-time.After(interval):
+			wait:
+				for {
+					replyMu.Lock()
+					interval := replyInterval(a.loadReplyThreads(), time.Now())
+					replyMu.Unlock()
+					select {
+					case <-a.rootCtx.Done():
+						return
+					case <-replyKick:
+						// 剛送出回報：重新計時，從現在起每小時查一次
+					case <-time.After(interval):
+						break wait
+					}
 				}
 			}
 		}()
