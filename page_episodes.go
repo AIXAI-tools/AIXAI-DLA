@@ -26,8 +26,11 @@ var (
 	// (e.g. a signed player proxy). Used only when the episode has no address
 	// with a media extension.
 	pageOpaqueStreamRE = regexp.MustCompile(`"(?:direct_play_url|directPlayUrl|play_url|playUrl|stream_url|streamUrl|hls_url|hlsUrl)"\s*:\s*"(https?:[^"]+)"`)
-	pageTitleRE        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	jsonEscapeRE       = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	// pageEmptyStreamRE: an episode the list names but gives no stream for
+	// (the site holds it back, e.g. until it is unlocked on the site).
+	pageEmptyStreamRE = regexp.MustCompile(`"(?:play_url|playUrl)"\s*:\s*(?:""|null)`)
+	pageTitleRE       = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	jsonEscapeRE      = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
 )
 
 // unescapeJSONText decodes \uXXXX escapes left in a URL copied out of JSON
@@ -47,6 +50,19 @@ func unescapeJSONText(s string) string {
 type pageEpisodeHint struct {
 	Page    string
 	Streams []string
+	// Others: the streams the page data lists for other episodes; a capture
+	// that only sees one of these has caught a preloaded neighbour.
+	Others []pageEpisodeEntry
+}
+
+// otherEpisode returns the episode whose listed stream is stream, or 0.
+func (h pageEpisodeHint) otherEpisode(stream string) int {
+	for _, e := range h.Others {
+		if sameStreamPath(stream, e.Stream) {
+			return e.Episode
+		}
+	}
+	return 0
 }
 
 // matches reports whether stream is one the page data lists for this episode.
@@ -150,6 +166,10 @@ func pageEpisodeEntries(body string) []pageEpisodeEntry {
 			matches = append(matches, match{m, true})
 		}
 	}
+	// Episodes listed without a stream become entries with an empty Stream.
+	for _, m := range pageEmptyStreamRE.FindAllStringIndex(body, 2000) {
+		matches = append(matches, match{[]int{m[0], m[1], m[1], m[1]}, false})
+	}
 	for _, mm := range matches {
 		m := mm.loc
 		start := enclosingObjectStart(body, m[0])
@@ -206,7 +226,7 @@ func pageEpisodeStreams(body string, ep int) (streams []string, listed bool, max
 	}
 	var opaque []string
 	for _, e := range entries {
-		if e.Episode != ep {
+		if e.Episode != ep || e.Stream == "" {
 			continue
 		}
 		if e.Opaque {
@@ -224,6 +244,39 @@ type errNoSuchEpisode struct{ ep, max int }
 
 func (e *errNoSuchEpisode) Error() string {
 	return fmt.Sprintf("網頁的集數清單中沒有第 %d 集（清單最多到第 %d 集）", e.ep, e.max)
+}
+
+// errEpisodeWithheld: the page lists this episode but gives no stream for it
+// (the site holds it back until it is unlocked there). Only the page itself,
+// played in the capture browser, can load it.
+type errEpisodeWithheld struct{ ep int }
+
+func (e *errEpisodeWithheld) Error() string {
+	return fmt.Sprintf("網頁資料列出第 %d 集，但沒有提供這集的串流（網站可能要先在播放畫面解鎖）", e.ep)
+}
+
+// errEpisodeDeferred: a withheld episode put off to the end of the batch
+// (app.deferWithheld), so every episode the page gives directly is saved
+// first and the ones that need the user are handled together.
+type errEpisodeDeferred struct{ ep int }
+
+func (e *errEpisodeDeferred) Error() string {
+	return fmt.Sprintf("第 %d 集需要在網站上解鎖，排到最後處理", e.ep)
+}
+
+// pageEpisodeListed reports whether the page data names episode ep at all
+// (with or without a stream), and returns the streams listed for the others.
+func pageEpisodeListed(body string, ep int) (bool, []pageEpisodeEntry) {
+	found := false
+	var others []pageEpisodeEntry
+	for _, e := range pageEpisodeEntries(body) {
+		if e.Episode == ep {
+			found = true
+		} else if e.Stream != "" {
+			others = append(others, e)
+		}
+	}
+	return found, others
 }
 
 func pageTitle(body string) string {
@@ -255,10 +308,20 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 	ep := pageEpisodeNumber(rawURL)
 	streams, listed, maxEp := pageEpisodeStreams(body, ep)
 	if len(streams) == 0 {
-		if listed {
-			return true, &errNoSuchEpisode{ep: ep, max: maxEp}
+		if !listed {
+			return false, nil
 		}
-		return false, nil
+		if present, others := pageEpisodeListed(body, ep); present {
+			if a.deferWithheld {
+				return true, &errEpisodeDeferred{ep: ep}
+			}
+			// The capture browser plays the page; the other episodes' streams
+			// tell it which preloaded ones are not this episode.
+			a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Others: others}
+			a.postLog(fmt.Sprintf("ℹ 網站沒有直接提供第 %d 集，需要在播放畫面解鎖：接著會打開瀏覽器視窗，請在視窗中操作（本工具不會自動點擊廣告；解鎖通常會維持一段時間，期間後面的集數可直接播放）。若知道影片的原始來源網址，改用原始網址下載可省去這一步。\r\n", ep))
+			return true, &errEpisodeWithheld{ep: ep}
+		}
+		return true, &errNoSuchEpisode{ep: ep, max: maxEp}
 	}
 	stream := streams[0]
 	// Remember the listed streams: if they cannot be fetched directly, the

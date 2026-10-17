@@ -18,7 +18,11 @@ var (
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
 	procGetClassNameW            = user32.NewProc("GetClassNameW")
 	procFlashWindowEx            = user32.NewProc("FlashWindowEx")
+	procMessageBeep              = user32.NewProc("MessageBeep")
 )
+
+// mbIconAsterisk: the system "information" sound for MessageBeep.
+const mbIconAsterisk = 0x40
 
 const (
 	swRestore      = 9

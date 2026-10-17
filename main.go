@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.2"
+	appVersion = "4.2.3"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -588,6 +588,9 @@ type app struct {
 	// pageEpisodeHint: the stream the page data lists for the current page
 	// (page_episodes.go); only used while Page equals the item's address.
 	pageEpisodeHint pageEpisodeHint
+	// deferWithheld: an episode the site withholds is put off to the end of
+	// the batch instead of opening the capture browser (first visit only).
+	deferWithheld bool
 
 	busy          atomic.Bool
 	stopRequested atomic.Bool
@@ -1082,8 +1085,42 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	} else {
 		a.postLog("⚠ 帳號安全模式已關閉：不加間隔、失敗會自動重試。大量下載需要登入的網站時，帳號可能被限制或封鎖。\r\n")
 	}
-	for i, rawURL := range urls {
-		a.runPos.Store(int32(i)) // finished items are not redone by 繼續下載
+	// order is the visiting order: items whose episode the site withholds are
+	// appended again at the end (deferItem), so the episodes the page gives
+	// directly are saved first and the ones needing the user come together.
+	order := make([]int, len(urls))
+	for k := range order {
+		order[k] = k
+	}
+	deferred := map[int]bool{} // items put off and not yet visited again
+	visited := make([]bool, len(urls))
+	defer func() { a.deferWithheld = false }()
+	deferItem := func(i int, err error) bool {
+		var d *errEpisodeDeferred
+		if !errors.As(err, &d) || a.stopRequested.Load() {
+			return false
+		}
+		deferred[i] = true
+		order = append(order, i)
+		a.diag = nil
+		a.postLog(fmt.Sprintf("ℹ 網站要求先在播放畫面解鎖第 %d 集，先下載其他集數，最後再一起處理（屆時會打開瀏覽器視窗並提醒您）。\r\n", d.ep))
+		a.emitTask(i, "pending", "需要在網站上解鎖，排到最後處理")
+		return true
+	}
+	for qi := 0; qi < len(order); qi++ {
+		i, rawURL := order[qi], urls[order[qi]]
+		a.deferWithheld = !visited[i] && qi < len(order)-1
+		visited[i] = true
+		delete(deferred, i)
+		// Finished items are not redone by 繼續下載; an item put off to the
+		// end keeps the resume point at or before it.
+		pos := i
+		for k := range deferred {
+			if k < pos {
+				pos = k
+			}
+		}
+		a.runPos.Store(int32(pos))
 		if a.stopRequested.Load() {
 			return nil
 		}
@@ -1136,6 +1173,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			}
 			if a.stopRequested.Load() {
 				return nil
+			}
+			if deferItem(i, err) {
+				continue
 			}
 			a.diagFinishItem(err)
 			if err == nil {
@@ -1402,6 +1442,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		}
 		if a.stopRequested.Load() {
 			return nil
+		}
+		if deferItem(i, err) {
+			continue
 		}
 		a.diagFinishItem(err)
 		if err != nil {
@@ -2213,6 +2256,17 @@ type webMediaCandidate struct {
 	Kind string
 }
 
+// isConnectionDropped reports a connection the server closed or reset
+// mid-request (e.g. "forcibly closed by the remote host"), which a second read
+// usually gets past.
+func isConnectionDropped(err error) bool {
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.Errno(10054)) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "forcibly closed") || strings.Contains(lower, "connection reset")
+}
+
 func fetchHTMLPage(ctx context.Context, rawURL string, cfg settings, referer string) (string, string, error) {
 	client := &http.Client{Timeout: 35 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -2434,9 +2488,10 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer string, mo
 func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode int, formatID, output string, cfg settings) error {
 	a.postLog("→ 正在掃描網頁中的 iframe、video/source、HLS/MP4 與播放器 JSON…\r\n")
 	body, finalURL, err := fetchHTMLPage(ctx, rawURL, cfg, "")
-	if err != nil && strings.Contains(err.Error(), "網頁 HTTP 5") {
-		// A passing server error: read once more, so the page's episode data is
-		// not lost to a browser capture that may pick a preloaded neighbour.
+	if err != nil && (strings.Contains(err.Error(), "網頁 HTTP 5") || isConnectionDropped(err)) {
+		// A passing server error or dropped connection: read once more, so the
+		// page's episode data is not lost to a browser capture that may pick a
+		// preloaded neighbour (or stop at the site's ad gate).
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -2472,7 +2527,11 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 			return errStopped
 		}
 		var noEp *errNoSuchEpisode
-		if errors.As(err, &noEp) {
+		var withheld *errEpisodeWithheld
+		var deferred *errEpisodeDeferred
+		if errors.As(err, &noEp) || errors.As(err, &withheld) || errors.As(err, &deferred) {
+			// A withheld episode goes straight to the capture browser: the
+			// page's other media addresses belong to other episodes.
 			return err
 		}
 		a.postLog("⚠ 頁面播放資料中的串流下載失敗，改用其他方式：" + firstLine(err.Error()) + "\r\n")
@@ -2633,6 +2692,10 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			var noEp *errNoSuchEpisode
 			if errors.As(err, &noEp) {
 				return &commandRunError{Cause: err, Summary: err.Error()}
+			}
+			var deferred *errEpisodeDeferred
+			if errors.As(err, &deferred) {
+				return err
 			}
 			a.postLog("⚠ 靜態網頁解析未找到串流，改用瀏覽器網路嗅探：" + firstLine(err.Error()) + "\r\n")
 		}

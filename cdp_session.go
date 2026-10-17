@@ -85,6 +85,32 @@ func (b *cdpBrowser) reveal(scale float64) {
 	_ = b.send("Page.bringToFront", nil)
 	b.visible = true
 	b.forceToFront()
+	// The window starts off screen (--window-position); when the DevTools
+	// move above does not take (seen with display scaling), move it with
+	// Windows itself so it never stays out of reach.
+	b.moveOnScreen(work, left, top, ww, wh)
+}
+
+// moveOnScreen places the browser's top windows at (left, top, w, h), in
+// screen pixels, when they do not lie wholly inside the work area (DevTools
+// bounds are in the browser's own scaled units, so with display scaling the
+// window may come out too large or off screen).
+func (b *cdpBrowser) moveOnScreen(work rect, left, top, w, h int) {
+	if b.cmd == nil || b.cmd.Process == nil {
+		return
+	}
+	for _, hw := range browserTopWindows(uint32(b.cmd.Process.Pid)) {
+		var r rect
+		procGetWindowRect.Call(hw, uintptr(unsafe.Pointer(&r)))
+		// A few pixels of slack: maximised and snapped windows reach just past
+		// the work area's edges.
+		const slack = 16
+		if r.Left >= work.Left-slack && r.Top >= work.Top-slack && r.Right <= work.Right+slack && r.Bottom <= work.Bottom+slack {
+			continue
+		}
+		procShowWindow.Call(hw, swRestore)
+		procSetWindowPos.Call(hw, 0, uintptr(left), uintptr(top), uintptr(w), uintptr(h), swpShowWindow)
+	}
 }
 
 func (b *cdpBrowser) rawCall(method string, params map[string]interface{}, session string) (chan cdpWireMessage, error) {
@@ -495,7 +521,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	if a.pageEpisodeHint.Page == rawURL {
 		listed = a.pageEpisodeHint
 	}
-	hasListed := len(listed.Streams) > 0
+	hasListed := len(listed.Streams) > 0 || len(listed.Others) > 0
 
 	states := map[string]*cdpRequestState{}
 	candidates := make(chan browserMediaCandidate, 128)
@@ -823,6 +849,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				b.reveal(a.scale)
 				a.loginBrowser.Store(b)
 				a.emit("login", map[string]interface{}{"waiting": true, "reason": "action"})
+				// Call the user back to the computer: the taskbar button
+				// flashes and the system information sound plays.
+				a.flashMainWindow()
+				procMessageBeep.Call(mbIconAsterisk)
 				a.postLog("ℹ 25 秒內尚未偵測到正片串流，已把瀏覽器視窗叫到前面：若畫面正在播廣告、要求按播放、登入或驗證，請直接在該視窗操作（本工具不會自動點擊廣告）。程式最多再等 10 分鐘。\r\n")
 				a.postStatus("狀態：等待正片開始播放（可在瀏覽器視窗操作，最多 10 分鐘）…")
 				if !deadline.Stop() {
@@ -853,6 +883,11 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				continue
 			}
 			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode) || listed.matches(c.URL)
+			if !c.EpisodeMatch && listed.otherEpisode(c.URL) > 0 {
+				// The page data lists this stream for another episode: a
+				// preloaded neighbour, never this one.
+				continue
+			}
 			c.UsedByEpisode = a.episodeGuard.streamUsedBy(c.URL)
 			if key := candidateKey(c.URL); !seenKeys[key] && len(seen) < 40 {
 				seenKeys[key] = true

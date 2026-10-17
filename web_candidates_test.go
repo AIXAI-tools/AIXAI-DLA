@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -144,6 +145,48 @@ func TestLookupPageEpisodeMissing(t *testing.T) {
 	}
 	if _, listed, _ := lookupPageEpisode(`{"number":1,"file":"https://a.example.com/x.mp4"}`, 9); listed {
 		t.Fatal("a lone entry is not a list")
+	}
+}
+
+// An episode the list names with an empty play_url is withheld by the site,
+// not missing: it counts toward the list and the other episodes' streams are
+// kept so the capture can rule them out.
+func TestPageEpisodeWithheld(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 6; i++ {
+		stream := ""
+		if i >= 3 && i <= 4 {
+			stream = fmt.Sprintf("https://media.example.com/v/%c%c/?a=1&mime_type=video_mp4", 'a'+i, 'a'+i)
+		}
+		fmt.Fprintf(&b, `{"id":%d,"route_episode_number":%d,"number":%d,"play_url":"%s","is_playable":%v,"direct_play_url":""},`, 100+i, i, i, stream, stream != "")
+	}
+	body := b.String()
+	if s, listed, max := pageEpisodeStreams(body, 1); len(s) != 0 || !listed || max != 6 {
+		t.Fatalf("withheld episode: got %q %v %d", s, listed, max)
+	}
+	present, others := pageEpisodeListed(body, 1)
+	if !present || len(others) != 2 {
+		t.Fatalf("listed: %v %v", present, others)
+	}
+	hint := pageEpisodeHint{Others: others}
+	if hint.otherEpisode("https://media.example.com/v/dd/?a=2") != 3 || hint.otherEpisode("https://media.example.com/v/zz/") != 0 {
+		t.Fatal("other-episode stream not recognised")
+	}
+	if s, _, _ := pageEpisodeStreams(body, 4); len(s) != 1 {
+		t.Fatalf("playable episode: got %q", s)
+	}
+	if present, _ := pageEpisodeListed(body, 9); present {
+		t.Fatal("episode 9 is not in the list")
+	}
+}
+
+func TestIsConnectionDropped(t *testing.T) {
+	err := fmt.Errorf(`Get "https://example.com/": read tcp 10.0.0.1:1->10.0.0.2:443: wsarecv: %w`, syscall.Errno(10054))
+	if !isConnectionDropped(err) {
+		t.Fatal("reset not recognised")
+	}
+	if isConnectionDropped(errors.New("網頁 HTTP 404")) {
+		t.Fatal("404 taken as dropped connection")
 	}
 }
 
