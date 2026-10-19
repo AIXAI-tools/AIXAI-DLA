@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.3"
+	appVersion = "4.2.4"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -2466,7 +2466,11 @@ func extractWebMediaCandidates(body, baseURL string) []webMediaCandidate {
 	return out
 }
 
-func (a *app) tryWebCandidate(ctx context.Context, candidate, referer string, mode int, formatID, output string, cfg settings) error {
+// tryWebCandidate downloads one media candidate of the page pageURL. On an
+// episode page the file is named like the page-data and capture downloads
+// (title_E003): a stream address named by yt-dlp would carry its whole query
+// string into the file name, past what Windows accepts.
+func (a *app) tryWebCandidate(ctx context.Context, candidate, referer, pageURL, title string, mode int, formatID, output string, cfg settings) error {
 	candidateMode := mode
 	if mode == 2 && looksLikeDirectMedia(candidate) {
 		candidateMode = 0
@@ -2474,6 +2478,9 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer string, mo
 	args, err := a.buildArgs(candidate, candidateMode, formatID, output, cfg)
 	if err != nil {
 		return err
+	}
+	if pageEpisodeNumber(pageURL) > 0 {
+		args = replaceOutputTemplate(args, capturedOutputBase(pageURL, title)+".%(ext)s")
 	}
 	// A candidate stands for the one video on the page: never let it expand
 	// into a playlist or channel.
@@ -2503,19 +2510,29 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 		return fmt.Errorf("讀取網頁失敗：%w", err)
 	}
 	// try downloads one candidate and checks its file; a file that fails the
-	// check sends the loop on to the next candidate.
+	// check sends the loop on to the next candidate. A video that passed gets
+	// the page's separate subtitle files (page_subtitles.go).
+	ep, epTitle := pageEpisodeNumber(rawURL), pageEpisodeTitle(rawURL, body)
 	try := func(run func() error) error {
 		a.resetOutputs()
+		done := len(a.itemFiles)
 		err := run()
 		if err == nil && !a.stopRequested.Load() {
 			err = a.finishStep(ctx, mode, cfg, true)
 		}
+		if err == nil && !a.stopRequested.Load() {
+			a.savePageSubtitles(ctx, body, finalURL, ep, a.itemFiles[done:], cfg)
+		}
 		return err
 	}
 	a.resetOutputs()
+	done := len(a.itemFiles)
 	if found, err := a.downloadPageEpisode(ctx, rawURL, finalURL, body, mode, formatID, output, cfg); found {
 		if err == nil && !a.stopRequested.Load() {
 			err = a.finishStep(ctx, mode, cfg, true)
+		}
+		if err == nil && !a.stopRequested.Load() {
+			a.savePageSubtitles(ctx, body, finalURL, ep, a.itemFiles[done:], cfg)
 		}
 		if err == nil {
 			a.postLog("✓ 已從頁面播放資料下載本集。\r\n")
@@ -2552,7 +2569,9 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 			return errStopped
 		}
 		a.postLog(fmt.Sprintf("→ 候選 %d/%d [%s]：%s\r\n", i+1, limit, c.Kind, c.URL))
-		if err := try(func() error { return a.tryWebCandidate(ctx, c.URL, finalURL, mode, formatID, output, cfg) }); err == nil {
+		if err := try(func() error {
+			return a.tryWebCandidate(ctx, c.URL, finalURL, rawURL, epTitle, mode, formatID, output, cfg)
+		}); err == nil {
 			a.postLog("✓ 網頁嵌入媒體候選下載成功。\r\n")
 			a.diagNote(fmt.Sprintf("候選 %d/%d [%s] ✓ %s", i+1, limit, c.Kind, diagMediaURL(c.URL)))
 			return nil
@@ -2579,7 +2598,9 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 						continue
 					}
 					a.postLog(fmt.Sprintf("  ↳ 內嵌候選 %d/%d：%s\r\n", j+1, nestedLimit, n.URL))
-					if err := try(func() error { return a.tryWebCandidate(ctx, n.URL, nestedFinal, mode, formatID, output, cfg) }); err == nil {
+					if err := try(func() error {
+						return a.tryWebCandidate(ctx, n.URL, nestedFinal, rawURL, epTitle, mode, formatID, output, cfg)
+					}); err == nil {
 						a.diagNote(fmt.Sprintf("內嵌候選 %d/%d ✓ %s", j+1, nestedLimit, diagMediaURL(n.URL)))
 						return nil
 					} else {
