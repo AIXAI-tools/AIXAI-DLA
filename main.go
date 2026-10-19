@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.4"
+	appVersion = "4.2.5"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -304,6 +304,11 @@ type settings struct {
 	Sequence       bool   `json:"sequence"`
 	SequenceStart  int    `json:"sequence_start"`
 	SequenceEnd    int    `json:"sequence_end"`
+	// EpisodeFormat and EpisodeSep name 連續集數 files (episode_naming.go);
+	// SeriesName is per task only and never saved to settings.json.
+	EpisodeFormat string `json:"episode_format,omitempty"`
+	EpisodeSep    string `json:"episode_sep,omitempty"`
+	SeriesName    string `json:"series_name,omitempty"`
 	// UnsafeMode turns 帳號安全模式 off. Stored inverted so that settings files
 	// written by older versions (without the key) get safety mode enabled.
 	UnsafeMode bool `json:"unsafe_mode"`
@@ -2480,7 +2485,7 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer, pageURL, 
 		return err
 	}
 	if pageEpisodeNumber(pageURL) > 0 {
-		args = replaceOutputTemplate(args, capturedOutputBase(pageURL, title)+".%(ext)s")
+		args = replaceOutputTemplate(args, a.outputBase(pageURL, title)+".%(ext)s")
 	}
 	// A candidate stands for the one video on the page: never let it expand
 	// into a playlist or channel.
@@ -3633,6 +3638,8 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		single, playlist := outputTemplates(output)
 		if collection && cfg.PlaylistFolder {
 			args = append(args, "-o", playlist)
+		} else if custom := a.customSequenceTemplate(cfg, output); custom != "" && !collection {
+			args = append(args, "-o", custom)
 		} else {
 			args = append(args, "-o", single)
 		}

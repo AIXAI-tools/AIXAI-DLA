@@ -136,6 +136,10 @@ textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent);
 #seqBox{gap:8px;min-width:0}
 .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-bottom:14px}
 .shield{color:var(--ok)}
+/* 連續集數的檔名（劇名＋集數格式＋連接符號） */
+.seqname{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.3fr) minmax(0,1.3fr);gap:8px;margin:-4px 0 14px}
+.seqname .s{grid-column:1/-1;font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:560px){ .seqname{grid-template-columns:1fr} }
 
 details.adv{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);margin-bottom:16px}
 details.adv>summary{cursor:pointer;list-style:none;padding:10px 14px;font-weight:600;display:flex;align-items:center;gap:8px;color:var(--muted)}
@@ -198,6 +202,22 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .job-f summary{cursor:pointer;font-size:12.5px;color:var(--muted)}
 .job .tasks{max-height:180px;margin-top:6px}
 .jobtag{font:600 11px var(--mono);color:var(--accent);margin-right:6px}
+/* 標題列一行：任務 N｜劇名｜網域｜資料夾，放不下時各段自動縮短（…），完整內容看滑鼠提示 */
+/* contain：標題列的長度不撐寬卡片與整頁（不會出現左右捲軸） */
+.job-h{contain:inline-size;min-width:0}
+.job-h .t{display:flex;align-items:baseline;min-width:0;overflow:hidden}
+.job-h .t>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job-h .t .id{flex:none}
+.job-h .t .nm{flex:0 1 auto;min-width:0}
+.job-h .t .dm{flex:0 0 auto;min-width:0;max-width:9em;font-weight:500;color:var(--muted)}
+.job-h .t .fd{flex:0 2 auto;min-width:0;font-weight:500;color:var(--muted)}
+.job-h .t .sp{flex:none;color:var(--faint);font-weight:400;padding:0 6px}
+.job-h .grip{cursor:grab;color:var(--faint);font-size:15px;line-height:1;padding:2px 2px;user-select:none;flex:none}
+.job-h .grip:hover{color:var(--text)}
+.job.dragging{opacity:.45}
+.job.drop-before{box-shadow:0 -3px 0 var(--accent)}
+.job.drop-after{box-shadow:0 3px 0 var(--accent)}
+.dlg-h.movable{cursor:move;user-select:none}
 .limit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:13px;color:var(--muted);flex-wrap:wrap;justify-content:flex-end}
 .limit input{width:58px;height:30px;padding:0 6px}
 .field-h{display:flex;align-items:center;gap:4px;margin:0 0 6px}
@@ -361,6 +381,16 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           </div>
         </div>
         <div class="err-text" id="err-sequence" style="margin:-6px 0 12px"></div>
+        <div class="seqname hidden" id="seqNameBox">
+          <input type="text" id="seriesName" spellcheck="false" placeholder="劇名（留空＝用網頁標題）" aria-label="劇名" title="檔名用的劇名；留空就用網頁標題">
+          <select id="epFormat" aria-label="集數格式" title="集數格式">
+            <option value="">_E001（預設）</option><option value="zh">第001集</option><option value="E">E001</option><option value="EP">EP001</option><option value="Episode">Episode 001</option>
+          </select>
+          <select id="epSep" aria-label="連接符號" title="劇名和集數之間的連接符號">
+            <option value="none">直接接續</option><option value="space">半形空白</option><option value="dash">-</option><option value="underscore">_</option><option value="space_dash">空白 - 空白</option><option value="space_underscore">空白 _ 空白</option>
+          </select>
+          <div class="s" id="epPreview"></div>
+        </div>
 
         <div class="grid2 field">
           <div>
@@ -649,6 +679,7 @@ function collect(){
   return {
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
+    seriesName:$("seriesName").value.trim(), episodeFormat:$("epFormat").value, episodeSep:$("epSep").value,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
     extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open,
     maxJobs:+$("maxJobs").value||0, dataFolder:$("dataFolder").value.trim()
@@ -664,12 +695,24 @@ function refreshDependent(){
   if($("extra").value.trim()) parts.push("參數："+$("extra").value.trim());
   $("advSum").textContent = parts.length ? "· "+parts.join("　") : "";
   $("seqBox").style.opacity = $("sequence").checked ? 1 : .75;
+  $("seqNameBox").classList.toggle("hidden", !$("sequence").checked);
+  $("epSep").disabled = !$("epFormat").value;
+  $("epPreview").textContent = "檔名範例："+episodeName(+$("seqStart").value||1)+".mp4";
 }
-["mode","login","capBrowser","sequence","seqStart","seqEnd","safe","noPlaylist","playlistFolder","extra","output","formatId","maxJobs"].forEach(id=>{
+const EP_FORMATS={zh:n=>`第${n}集`,E:n=>`E${n}`,EP:n=>`EP${n}`,Episode:n=>`Episode ${n}`};
+const EP_SEPS={none:"",space:" ",dash:"-",underscore:"_",space_dash:" - ",space_underscore:" _ "};
+// 與 episode_naming.go 相同的規則（只用來顯示範例）
+function episodeName(ep){
+  const name=$("seriesName").value.trim()||"（網頁標題）", n=String(ep).padStart(3,"0"), f=EP_FORMATS[$("epFormat").value];
+  if(!f) return `${name}_E${n}`;
+  const sep=EP_SEPS[$("epSep").value]; return name+(sep==null?" ":sep)+f(n);
+}
+["mode","login","capBrowser","sequence","seqStart","seqEnd","epFormat","epSep","safe","noPlaylist","playlistFolder","extra","output","formatId","maxJobs"].forEach(id=>{
   $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
   $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
 });
 $("adv").addEventListener("toggle",saveSoon);
+$("seriesName").addEventListener("input",refreshDependent);
 $("btnBrowse").onclick = async()=>{ const p=await goPickFolder($("output").value); if(p){$("output").value=p;saveSoon();} };
 $("btnOpenFolder").onclick = async()=>{ const e=await goOpenFolder($("output").value); if(e) toast(e); };
 $("btnCookie").onclick = async()=>{ const p=await goPickCookieFile(); if(p){$("cookieFile").value=p;saveSoon();} };
@@ -691,6 +734,8 @@ function fillForm(init){
   };
   $("mode").value=String(s.mode||0); $("output").value=s.output_folder||"";
   $("sequence").checked=!!s.sequence; $("seqStart").value=s.sequence_start||1; $("seqEnd").value=s.sequence_end||50;
+  $("epFormat").value=s.episode_format||""; if($("epFormat").selectedIndex<0) $("epFormat").value="";
+  $("epSep").value=s.episode_sep||"space"; if($("epSep").selectedIndex<0) $("epSep").value="space";
   $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder;
   $("extra").value=s.extra_args||"";
   if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
@@ -724,7 +769,7 @@ document.addEventListener("keydown",e=>{ if(e.ctrlKey && e.key==="Enter"){ e.pre
 /* ---------------- tasks ---------------- */
 const JOB_LABEL={queued:"排隊中",running:"下載中",paused:"已暫停",done:"已完成",partial:"部分失敗",failed:"失敗",aborted:"已中止"};
 const JOB_BTNS={
-  queued:[["pause","暫停"],["abort","中止"]],
+  queued:[["prioritize","優先下載"],["pause","暫停"],["abort","中止"]],
   running:[["pause","暫停"],["abort","中止"]],
   paused:[["resume","繼續"],["abort","中止"],["remove","移除"]],
   failed:[["resume","繼續"],["abort","中止"],["remove","移除"]],
@@ -737,7 +782,9 @@ function mergeJob(v){
 }
 function setJobs(list){ const keep={}; list.forEach(v=>{ mergeJob(v); keep[v.id]=true; }); Object.keys(state.jobs).forEach(id=>{ if(!keep[id]) delete state.jobs[id]; }); renderJobs(); }
 function renderJobs(){
-  const ul=$("jobs"); const list=Object.values(state.jobs).sort((a,b)=>a.id-b.id);
+  if(dragJob){ dragPending=true; return; } // 拖曳中不重畫（把手被換掉拖曳會中斷），放開後補畫
+  const ul=$("jobs"); const list=Object.values(state.jobs).sort((a,b)=>(a.order-b.order)||(a.id-b.id));
+  const firstActive=list.find(j=>j.state==="running"||j.state==="queued");
   const running=list.filter(j=>j.state==="running").length, queued=list.filter(j=>j.state==="queued").length;
   $("btnPauseAll").disabled=!(running||queued); $("btnResumeAll").disabled=!list.some(j=>j.state==="paused");
   if(list.length) $("status").textContent = running||queued ? `執行中 ${running} 個任務${queued?`，排隊 ${queued} 個`:""}。` : "沒有執行中的任務。";
@@ -752,13 +799,20 @@ function renderJobs(){
     const total=j.items.length, done=j.items.filter(t=>t.state==="done").length, failed=j.items.filter(t=>t.state==="failed").length;
     const cur=j.items.find(t=>t.state==="running"); const part=cur&&cur.pct?cur.pct/100:0;
     const line = j.state==="running" ? (j.status||"") : j.state==="queued" ? (j.waiting||"等待開始…") : (j.message||"");
-    const btns=(JOB_BTNS[j.state]||[]).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
+    const btns=(JOB_BTNS[j.state]||[]).filter(([a])=>a!=="prioritize"||j!==firstActive).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
       + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`
       + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
     const items=j.items.map((t,i)=>`<span class="ic">${icon[t.state]||"○"}</span>
       <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.brief||t.msg)}</div>`:""}</div>
       <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span>`);
-    const top=`<div class="job-h"><span class="t" title="${esc(j.title)}">${esc(j.title)}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
+    const movable=j.state==="running"||j.state==="queued";
+    const site=(j.sites||[]).join("、");
+    // 劇名、資料夾各最多 8 個字，超過以「…」結尾（完整內容看滑鼠提示）
+    const cut=(v,n)=>{ const c=[...(v||"")]; return c.length>n ? c.slice(0,n).join("")+"…" : (v||""); };
+    const parts=[["id",`任務 ${j.id}`],["nm",cut(j.name,8)],["dm",site],["fd",j.folder?"📁 "+cut(j.folder,8):""]].filter(p=>p[1]);
+    const head=parts.map(([c,v],i)=>(i?'<span class="sp">|</span>':"")+`<span class="${c}">${esc(v)}</span>`).join("");
+    const tip=[`任務 ${j.id}`, j.name?"劇名："+j.name:"", site?"網域："+site:"", j.output?"資料夾："+j.output:""].filter(Boolean).join("\n");
+    const top=`<div class="job-h">${movable?`<span class="grip" draggable="true" data-id="${j.id}" title="拖曳調整順序：越上面越先下載">⠿</span>`:""}<span class="t" title="${esc(tip)}">${head}</span><span class="n">${done}/${total}${failed?`（${failed} 失敗）`:""}</span><span class="badge ${j.state}">${JOB_LABEL[j.state]||j.state}</span></div>
       ${j.state==="failed"&&j.brief?`<div class="job-s">${esc(j.brief)}</div><details class="raw"><summary>原始訊息</summary><pre>${esc(j.message||"")}</pre></details>`:(line?`<div class="job-s">${esc(line)}</div>`:"")}
       <div class="bar"><i style="width:${total?((done+failed+part)/total*100):0}%"></i></div>`;
     let li=have[j.id]; delete have[j.id];
@@ -788,9 +842,27 @@ $("jobs").onclick=async e=>{
   if(act==="log"){ const err=await goOpenLogFile(id); if(err) toast(err); return; }
   if(act==="report"){ const msg=await goReportPack(id); if(msg) toast(msg); return; }
   if(act==="folder"){ const err=await goOpenFolder(j?j.output:$("output").value); if(err) toast(err); return; }
+  if(act==="prioritize"){ const err=await goJobPrioritize(id); if(err) toast(err); return; }
   if(act==="abort" && !confirm(`確定要中止任務 ${id}？已下載完成的檔案會保留，但這個任務不能再繼續。`)) return;
   const err=await goJobAction(id,act); if(err) toast(err);
 };
+/* 拖曳把手調整任務順序：放在目標卡片的上半部＝排在它前面，下半部＝排在它後面 */
+var dragJob=0, dragPending=false;
+const clearDrop=()=>{ $("jobs").querySelectorAll(".drop-before,.drop-after,.dragging").forEach(e=>e.classList.remove("drop-before","drop-after","dragging"));
+  if(dragPending){ dragPending=false; renderJobs(); } };
+const dropTarget=e=>{ const li=e.target.closest("li.job"); if(!li||!dragJob||+li.dataset.job===dragJob) return null;
+  const j=state.jobs[+li.dataset.job]; return j&&(j.state==="running"||j.state==="queued")?li:null; };
+$("jobs").addEventListener("dragstart",e=>{ const g=e.target.closest&&e.target.closest(".grip"); if(!g) return;
+  dragJob=+g.dataset.id; e.dataTransfer.effectAllowed="move"; e.dataTransfer.setData("text/plain",String(dragJob));
+  const li=g.closest("li.job"); e.dataTransfer.setDragImage(li,20,20); li.classList.add("dragging"); });
+$("jobs").addEventListener("dragover",e=>{ const li=dropTarget(e); if(!li) return; e.preventDefault();
+  const r=li.getBoundingClientRect(), after=e.clientY>r.top+r.height/2;
+  $("jobs").querySelectorAll(".drop-before,.drop-after").forEach(x=>{ if(x!==li) x.classList.remove("drop-before","drop-after"); });
+  li.classList.toggle("drop-after",after); li.classList.toggle("drop-before",!after); });
+$("jobs").addEventListener("drop",async e=>{ const li=dropTarget(e); if(!li) return; e.preventDefault();
+  const after=li.classList.contains("drop-after"), id=dragJob; dragJob=0; clearDrop();
+  const err=await goJobMove(id,+li.dataset.job,after); if(err) toast(err); });
+$("jobs").addEventListener("dragend",()=>{ dragJob=0; clearDrop(); });
 $("btnClearDone").onclick=()=>goClearFinished();
 $("btnPauseAll").onclick=async()=>{ const n=await goPauseAll(); toast(n?`已暫停 ${n} 個任務`:"沒有下載中或排隊中的任務"); };
 $("btnResumeAll").onclick=async()=>{ const n=await goResumeAll(); toast(n?`已繼續 ${n} 個任務`:"沒有已暫停的任務"); };
@@ -1063,8 +1135,22 @@ function renderUpdate(p){
 }
 
 /* ---------------- feedback dialog ---------------- */
+/* 回報視窗可拖曳標題列移動（每次開啟回到置中） */
+(()=>{ const d=$("dlgFeedback"), h=d.querySelector(".dlg-h"); h.classList.add("movable"); h.title="拖曳可移動視窗";
+  let sx=0, sy=0, ox=0, oy=0, on=false;
+  h.addEventListener("pointerdown",e=>{ if(e.button!==0||e.target.closest("button,input,select,textarea,a")) return;
+    on=true; sx=e.clientX; sy=e.clientY; ox=+d.dataset.dx||0; oy=+d.dataset.dy||0; h.setPointerCapture(e.pointerId); });
+  h.addEventListener("pointermove",e=>{ if(!on) return;
+    const r=d.getBoundingClientRect(), cx=r.left-(+d.dataset.dx||0), cy=r.top-(+d.dataset.dy||0);
+    // 左右整個留在視窗內、標題列不超出上下緣（關閉鈕一直看得到）
+    const dx=Math.min(Math.max(ox+e.clientX-sx, -cx), Math.max(-cx, innerWidth-r.width-cx));
+    const dy=Math.min(Math.max(oy+e.clientY-sy, -cy), Math.max(-cy, innerHeight-h.offsetHeight-cy));
+    d.dataset.dx=dx; d.dataset.dy=dy; d.style.translate=`${dx}px ${dy}px`; });
+  const end=()=>{ on=false; }; h.addEventListener("pointerup",end); h.addEventListener("pointercancel",end);
+})();
+function resetFeedbackPos(){ const d=$("dlgFeedback"); d.dataset.dx=0; d.dataset.dy=0; d.style.translate=""; }
 function openFeedback(prefill){
-  $("dlgFeedback").showModal(); $("fbResult").className="banner";
+  resetFeedbackPos(); $("dlgFeedback").showModal(); $("fbResult").className="banner";
   if(prefill && !$("fbText").value) $("fbText").value="執行時出現錯誤：\n"+prefill.split("\n").slice(0,4).join("\n")+"\n\n（請補充：操作步驟）";
   $("fbText").focus();
   if(!state.logs.length) goLatestLogs().then(ls=>{ if(state.logs.length) return; (ls||[]).forEach(l=>{ if(l && l.path && !state.logsRemoved.has(l.name)) state.logs.push(l); }); renderLogs(); });

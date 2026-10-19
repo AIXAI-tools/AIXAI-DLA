@@ -369,8 +369,12 @@ func replaceOutputTemplate(args []string, tmpl string) []string {
 // capturedFileBase names a captured video: as before, except that a video
 // that would otherwise be "Captured_Video_<time>" takes the page's title,
 // shortened so the full path stays playable (path_length.go).
-func capturedFileBase(rawURL string, c browserMediaCandidate, dir string) string {
-	base := capturedOutputBase(rawURL, c.Title)
+func (a *app) capturedFileBase(rawURL string, c browserMediaCandidate, dir string) string {
+	n, ep := namingFor(a.cfg), a.sequenceEpisode()
+	if n.custom() && ep > 0 && strings.TrimSpace(c.Title) == "" {
+		return capturedOutputBaseNamed(rawURL, c.PageTitle, n, ep)
+	}
+	base := capturedOutputBaseNamed(rawURL, c.Title, n, ep)
 	if strings.TrimSpace(c.Title) != "" || !strings.HasPrefix(base, "Captured_Video_") {
 		return base
 	}
@@ -385,11 +389,17 @@ func capturedFileBase(rawURL string, c browserMediaCandidate, dir string) string
 }
 
 func capturedOutputBase(rawURL, title string) string {
+	return capturedOutputBaseNamed(rawURL, title, episodeNaming{}, 0)
+}
+
+// capturedOutputBaseNamed is capturedOutputBase with a 連續集數 naming
+// (episode_naming.go); seqEp numbers an item whose address has no episode.
+func capturedOutputBaseNamed(rawURL, title string, n episodeNaming, seqEp int) string {
 	if dramaID, ep, ok := parseTikTokShortDramaURL(rawURL); ok {
 		if clean := safeWindowsBaseName(title); clean != "" {
-			return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", clean, ep))
+			return n.join(clean, ep)
 		}
-		return safeWindowsBaseName(fmt.Sprintf("Video_%s_E%03d", dramaID, ep))
+		return n.join("Video_"+dramaID, ep)
 	}
 	if u, err := url.Parse(rawURL); err == nil {
 		parts := strings.FieldsFunc(strings.Trim(u.Path, "/"), func(r rune) bool { return r == '/' })
@@ -397,8 +407,7 @@ func capturedOutputBase(rawURL, title string) string {
 			last := parts[len(parts)-1]
 			if m := captureEpisodeRE.FindStringSubmatch(strings.ToLower(last)); len(m) > 1 {
 				ep, _ := strconv.Atoi(m[1])
-				series := parts[len(parts)-2]
-				return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", series, ep))
+				return n.join(parts[len(parts)-2], ep)
 			}
 			// e.g. /play/123/3: the number a sequence download replaces. Episode
 			// pages often share one title, so without the number every episode
@@ -409,7 +418,7 @@ func capturedOutputBase(rawURL, title string) string {
 				if name == "" {
 					name = safeWindowsBaseName(parts[len(parts)-2])
 				}
-				return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", name, ep))
+				return n.join(name, ep)
 			}
 		}
 	}
@@ -423,7 +432,14 @@ func capturedOutputBase(rawURL, title string) string {
 		if name == "" {
 			name = "Video"
 		}
-		return safeWindowsBaseName(fmt.Sprintf("%s_E%03d", name, ep))
+		return n.join(name, ep)
+	}
+	if n.custom() && seqEp > 0 {
+		name := safeWindowsBaseName(title)
+		if name == "" {
+			name = "Video"
+		}
+		return n.join(name, seqEp)
 	}
 	if strings.TrimSpace(title) != "" {
 		return safeWindowsBaseName(title)
@@ -448,7 +464,7 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	if err != nil {
 		return err
 	}
-	base := capturedFileBase(rawURL, candidate, output)
+	base := a.capturedFileBase(rawURL, candidate, output)
 	args = replaceOutputTemplate(args, base+".%(ext)s")
 
 	headers := candidate.RequestHeaders
@@ -510,7 +526,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 	if err := os.MkdirAll(output, 0755); err != nil {
 		return err
 	}
-	base := capturedFileBase(rawURL, candidate, output)
+	base := a.capturedFileBase(rawURL, candidate, output)
 	ext := ".mp4"
 	if mode == 1 {
 		ext = ".mp3"

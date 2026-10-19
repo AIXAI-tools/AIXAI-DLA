@@ -174,7 +174,9 @@ func (a *app) emitTask(index int, state, message string) {
 		return
 	}
 	index += a.itemOffset
-	a.setJobItem(index, state, message)
+	if a.setJobItem(index, state, message) {
+		a.emitJob(a.job)
+	}
 	a.noteItemResult(index, state, message)
 	a.recordHistory(index, state, message)
 	brief := ""
@@ -312,6 +314,9 @@ type startRequest struct {
 	Sequence       bool   `json:"sequence"`
 	SequenceStart  int    `json:"sequenceStart"`
 	SequenceEnd    int    `json:"sequenceEnd"`
+	SeriesName     string `json:"seriesName"`
+	EpisodeFormat  string `json:"episodeFormat"`
+	EpisodeSep     string `json:"episodeSep"`
 	Safe           bool   `json:"safe"`
 	NoPlaylist     bool   `json:"noPlaylist"`
 	PlaylistFolder bool   `json:"playlistFolder"`
@@ -375,6 +380,8 @@ func (a *app) bindUI() {
 	})
 	_ = w.Bind("goStart", a.startFromUI)
 	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
+	_ = w.Bind("goJobMove", func(id, target int, after bool) string { return a.moveJob(id, target, after) })
+	_ = w.Bind("goJobPrioritize", func(id int) string { return a.prioritizeJob(id) })
 	_ = w.Bind("goClearFinished", func() { a.clearFinishedJobs() })
 	_ = w.Bind("goPauseAll", func() int { return a.pauseAllJobs(false) })
 	_ = w.Bind("goResumeAll", func() int { return a.resumeAllJobs(false) })
@@ -474,6 +481,13 @@ func (a *app) applyRequestToSettings(req startRequest) {
 	if req.SequenceEnd > 0 {
 		a.cfg.SequenceEnd = req.SequenceEnd
 	}
+	a.cfg.EpisodeFormat, a.cfg.EpisodeSep = "", ""
+	if _, ok := episodeFormats[req.EpisodeFormat]; ok {
+		a.cfg.EpisodeFormat = req.EpisodeFormat
+	}
+	if _, ok := episodeSeps[req.EpisodeSep]; ok {
+		a.cfg.EpisodeSep = req.EpisodeSep
+	}
 	a.cfg.UnsafeMode = !req.Safe
 	a.cfg.DataFolder = strings.TrimSpace(req.DataFolder)
 	a.setDataFolderPref(a.cfg.DataFolder)
@@ -557,7 +571,11 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		}
 	}
 
-	j := a.addJob(urls, req.Mode, formatID, output, a.cfg, notes)
+	cfg := a.cfg
+	if req.Sequence {
+		cfg.SeriesName = safeWindowsBaseName(req.SeriesName)
+	}
+	j := a.addJob(urls, req.Mode, formatID, output, cfg, notes)
 	a.resumePath = ""
 	return startResponse{URLs: urls, JobID: j.ID}
 }

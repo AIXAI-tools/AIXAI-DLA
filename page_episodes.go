@@ -337,7 +337,7 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 	if err != nil {
 		return true, err
 	}
-	args = replaceOutputTemplate(args, capturedOutputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
+	args = replaceOutputTemplate(args, a.outputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
 	extras := []string{"--no-playlist", "--referer", finalURL, "--impersonate", "chrome"}
 	if base, err := url.Parse(finalURL); err == nil && base.Scheme != "" && base.Host != "" {
 		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)

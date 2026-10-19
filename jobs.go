@@ -19,6 +19,9 @@ import (
 // a site sees one task's requests at a time, which keeps the request rate of
 // a single download even without sign-in (sites also block by IP).
 // Unfinished tasks are saved to tasks.json and come back paused next time.
+// The order of a.jobs is the order of the cards and the priority: tasks
+// start in that order, and moving a task up (drag, 優先下載) makes a lower
+// running task that is in its way step aside (jobYield) and queue again.
 
 const (
 	jobQueued  = "queued"
@@ -28,6 +31,9 @@ const (
 	jobPartial = "partial"
 	jobFailed  = "failed"
 	jobAborted = "aborted"
+	// jobYield is a stopAs only: the task steps aside for a task moved
+	// above it and is queued again, resuming at the item it stopped at.
+	jobYield = "yield"
 
 	maxJobsLimit   = 8
 	jobsFileName   = "tasks.json"
@@ -53,6 +59,9 @@ type job struct {
 	Message  string    `json:"message,omitempty"`
 	LogFile  string    `json:"logFile,omitempty"`
 	Created  time.Time `json:"created"`
+	// Name is the series or video name the card shows: the 劇名 the user
+	// gave, else taken from the first saved file.
+	Name string `json:"name,omitempty"`
 	// AutoResume marks a task paused only for a version update; the updated
 	// program resumes it (tasks the user paused are left paused).
 	AutoResume bool `json:"autoResume,omitempty"`
@@ -67,6 +76,8 @@ type job struct {
 type jobView struct {
 	ID      int       `json:"id"`
 	Title   string    `json:"title"`
+	Name    string    `json:"name,omitempty"` // 劇名 shown on the card
+	Order   int       `json:"order"`
 	State   string    `json:"state"`
 	Message string    `json:"message,omitempty"`
 	Brief   string    `json:"brief,omitempty"` // short Chinese reason when the task failed
@@ -74,6 +85,7 @@ type jobView struct {
 	URLs    []string  `json:"urls"`
 	Items   []jobItem `json:"items"`
 	Output  string    `json:"output"`
+	Folder  string    `json:"folder"`
 	Sites   []string  `json:"sites"`
 	Waiting string    `json:"waiting,omitempty"`
 }
@@ -123,16 +135,22 @@ func jobSites(urls []string) []string {
 
 func (j *job) view() jobView {
 	sites := jobSites(j.URLs)
+	name := j.Name
+	if name != "" && !j.Cfg.Sequence && len(j.URLs) > 1 {
+		name += fmt.Sprintf(" 等 %d 個", len(j.URLs))
+	}
 	title := fmt.Sprintf("任務 %d", j.ID)
-	if len(sites) > 0 {
-		title += "｜" + strings.Join(sites, "、")
+	for _, part := range []string{name, strings.Join(sites, "、")} {
+		if part != "" {
+			title += "｜" + part
+		}
 	}
 	brief := ""
 	if j.State == jobFailed {
 		brief = errorBrief(j.Message)
 	}
-	return jobView{ID: j.ID, Title: title, State: j.State, Message: j.Message, Brief: brief, Status: j.status,
-		URLs: j.URLs, Items: append([]jobItem(nil), j.Items...), Output: j.Output, Sites: sites}
+	return jobView{ID: j.ID, Title: title, Name: name, State: j.State, Message: j.Message, Brief: brief, Status: j.status,
+		URLs: j.URLs, Items: append([]jobItem(nil), j.Items...), Output: j.Output, Folder: filepath.Base(filepath.Clean(j.Output)), Sites: sites}
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +242,15 @@ func (a *app) jobViews() []jobView {
 // viewLocked adds why a queued task is not running yet; jobsMu must be held.
 func (a *app) viewLocked(j *job) jobView {
 	v := j.view()
+	for i, x := range a.jobs {
+		if x == j {
+			v.Order = i
+			break
+		}
+	}
+	if j.State == jobRunning && j.stopAs == jobYield {
+		v.Status = "正在讓位給排在前面的任務，稍後從這一集接著下載…"
+	}
 	if j.State == jobQueued {
 		busy := a.busySitesLocked()
 		for _, s := range v.Sites {
@@ -304,7 +331,7 @@ func (a *app) addJob(urls []string, mode int, formatID, output string, cfg setti
 	a.jobsMu.Lock()
 	a.nextJobID++
 	j := &job{ID: a.nextJobID, URLs: urls, Items: make([]jobItem, len(urls)), Mode: mode, FormatID: formatID,
-		Output: output, Cfg: cfg, State: jobQueued, Created: time.Now(), notes: notes}
+		Output: output, Cfg: cfg, State: jobQueued, Created: time.Now(), Name: cfg.SeriesName, notes: notes}
 	for i := range j.Items {
 		j.Items[i].State = "pending"
 	}
@@ -316,7 +343,7 @@ func (a *app) addJob(urls []string, mode int, formatID, output string, cfg setti
 	return j
 }
 
-// schedule starts queued tasks, oldest first, while there are free slots;
+// schedule starts queued tasks in card order while there are free slots;
 // a task whose website is already being downloaded waits for that task.
 func (a *app) schedule() {
 	if a.closing.Load() {
@@ -333,7 +360,7 @@ func (a *app) schedule() {
 	}
 }
 
-// pickRunnable chooses the queued tasks to start now, oldest first: while
+// pickRunnable chooses the queued tasks to start now, in card order: while
 // fewer than limit tasks run, and only tasks whose websites no running (or
 // just chosen) task is using.
 func pickRunnable(jobs []*job, limit int) []*job {
@@ -431,6 +458,9 @@ func (a *app) finishJob(j *job, w *app, err error) {
 	case stopped && j.stopAs == jobAborted:
 		j.State, j.Message = jobAborted, "已中止。"
 		final = "=== 任務已中止 ==="
+	case stopped && j.stopAs == jobYield:
+		j.State, j.Pos, j.Message = jobQueued, pos, ""
+		final = fmt.Sprintf("=== 讓位給排在前面的任務，稍後從第 %d/%d 項接著下載 ===", pos+1, len(j.URLs))
 	case stopped:
 		j.State, j.Pos = jobPaused, pos
 		j.Message = fmt.Sprintf("已暫停：按「繼續」從第 %d/%d 項接著下載，未完成的檔案會保留。", pos+1, len(j.URLs))
@@ -544,9 +574,11 @@ func (a *app) pauseAllJobs(forUpdate bool) int {
 	for _, j := range a.jobs {
 		switch j.State {
 		case jobRunning:
-			if j.stopAs == "" {
+			if j.stopAs == "" || j.stopAs == jobYield {
+				if j.stopAs == "" {
+					workers = append(workers, j.worker)
+				}
 				j.stopAs = jobPaused
-				workers = append(workers, j.worker)
 			}
 		case jobQueued:
 			j.State, j.Message = jobPaused, "已暫停，按「繼續」重新排入佇列。"
@@ -675,8 +707,9 @@ func (a *app) jobLogFile(id int) string {
 	return best
 }
 
-// setJobItem records an item's state for a task's worker.
-func (a *app) setJobItem(index int, state, message string) {
+// setJobItem records an item's state for a task's worker; named reports
+// that the task just got its name from the item's file.
+func (a *app) setJobItem(index int, state, message string) (named bool) {
 	if a.job == nil {
 		return
 	}
@@ -690,11 +723,22 @@ func (a *app) setJobItem(index int, state, message string) {
 				a.job.Items[index].Brief = errorBrief(message)
 			}
 		}
+		if state == "done" && a.job.Name == "" {
+			// itemFiles: the checked files of this item (as in the download history)
+			for _, f := range append(append([]string(nil), a.itemFiles...), a.outputs...) {
+				if mediaExts[strings.ToLower(filepath.Ext(f))] {
+					a.job.Name = jobNameFromFile(f)
+					named = a.job.Name != ""
+					break
+				}
+			}
+		}
 		if state == "done" || state == "failed" {
 			a.saveJobsLocked()
 		}
 	}
 	a.jobsMu.Unlock()
+	return named
 }
 
 func (a *app) setJobStatus(s string) {
@@ -702,4 +746,133 @@ func (a *app) setJobStatus(s string) {
 	a.job.status = s
 	a.jobsMu.Unlock()
 	a.emit("jobStatus", map[string]interface{}{"id": a.job.ID, "status": s})
+}
+
+// moveJob puts task id right before (or after) task target in the card
+// order; both must be running or queued. Tasks now in the way of a task
+// above them step aside (finishMoveLocked).
+func (a *app) moveJob(id, target int, after bool) string {
+	a.jobsMu.Lock()
+	j, t := a.findJobLocked(id), a.findJobLocked(target)
+	if j == nil || t == nil {
+		a.jobsMu.Unlock()
+		return "找不到這個任務。"
+	}
+	if !jobMovable(j) || !jobMovable(t) {
+		a.jobsMu.Unlock()
+		return "只有下載中或排隊中的任務可以調整順序。"
+	}
+	if j != t {
+		a.jobs = moveJobInList(a.jobs, j, t, after)
+	}
+	a.finishMoveLocked()
+	return ""
+}
+
+// prioritizeJob (優先下載) moves a queued task above every running or queued
+// task.
+func (a *app) prioritizeJob(id int) string {
+	a.jobsMu.Lock()
+	j := a.findJobLocked(id)
+	if j == nil || j.State != jobQueued {
+		a.jobsMu.Unlock()
+		return "只有排隊中的任務可以優先下載。"
+	}
+	for _, t := range a.jobs {
+		if jobMovable(t) {
+			if t != j {
+				a.jobs = moveJobInList(a.jobs, j, t, false)
+			}
+			break
+		}
+	}
+	a.finishMoveLocked()
+	return ""
+}
+
+// finishMoveLocked saves the new order, makes the tasks in the way step
+// aside and starts what can start; jobsMu must be held and is released.
+func (a *app) finishMoveLocked() {
+	var workers []*app
+	for _, j := range yieldingJobs(a.jobs, int(a.maxJobs.Load())) {
+		j.stopAs = jobYield
+		workers = append(workers, j.worker)
+	}
+	a.saveJobsLocked()
+	a.jobsMu.Unlock()
+	for _, w := range workers {
+		if w != nil {
+			w.stopCurrent()
+		}
+	}
+	a.emitAllJobs()
+	a.schedule()
+}
+
+// jobMovable: running (and not being paused or aborted) or queued.
+func jobMovable(j *job) bool {
+	return j.State == jobQueued || (j.State == jobRunning && (j.stopAs == "" || j.stopAs == jobYield))
+}
+
+// moveJobInList returns jobs with j moved right before (or after) t.
+func moveJobInList(jobs []*job, j, t *job, after bool) []*job {
+	out := make([]*job, 0, len(jobs))
+	for _, x := range jobs {
+		if x != j {
+			out = append(out, x)
+		}
+	}
+	for i, x := range out {
+		if x == t {
+			if after {
+				i++
+			}
+			return append(out[:i], append([]*job{j}, out[i:]...)...)
+		}
+	}
+	return append(out, j)
+}
+
+// yieldingJobs are the running tasks that must step aside: going down the
+// card order, running and queued tasks take the free slots and websites,
+// and a running task left without them because a task above took them
+// yields. Tasks being paused or aborted keep theirs until they stop.
+func yieldingJobs(jobs []*job, limit int) []*job {
+	used := 0
+	busy := map[string]bool{}
+	for _, j := range jobs {
+		if j.State == jobRunning && !jobMovable(j) {
+			used++
+			for _, s := range jobSites(j.URLs[j.Pos:]) {
+				busy[s] = true
+			}
+		}
+	}
+	var out []*job
+	for _, j := range jobs {
+		if !jobMovable(j) {
+			continue
+		}
+		sites := jobSites(j.URLs[j.Pos:])
+		free := used < limit
+		for _, s := range sites {
+			if busy[s] {
+				free = false
+			}
+		}
+		if free {
+			used++
+			for _, s := range sites {
+				busy[s] = true
+			}
+			if j.State == jobRunning && j.stopAs == jobYield {
+				j.stopAs = "" // moved back up before it stopped: keep going
+			}
+			continue
+		}
+		if j.State == jobRunning && j.stopAs == "" {
+			out = append(out, j)
+		}
+	}
+	return out
 }
