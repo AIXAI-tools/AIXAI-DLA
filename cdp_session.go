@@ -575,7 +575,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			}
 			body = string(raw)
 		}
-		c, res, listedEps := tiktokCandidateFromAPIBodyResult([]byte(body), apiURL, tiktokEpisode, reqHeaders)
+		c, res, listedEps := tiktokCandidateFromAPIBodyResult([]byte(body), apiURL, tiktokEpisode, a.captureMaxShortSide, reqHeaders)
 		tikDiag.read(true, res, listedEps)
 		if res != tiktokAPIMatched {
 			tikDiag.apiStatus([]byte(body))

@@ -259,7 +259,7 @@ func isTikTokDramaAPI(raw string) bool {
 // tiktokCandidateFromAPIBody picks the requested episode out of a TikTok API
 // response body and turns its best stream into a capture candidate.
 func tiktokCandidateFromAPIBody(body []byte, apiURL string, episode int, reqHeaders map[string]string) (browserMediaCandidate, bool) {
-	c, res, _ := tiktokCandidateFromAPIBodyResult(body, apiURL, episode, reqHeaders)
+	c, res, _ := tiktokCandidateFromAPIBodyResult(body, apiURL, episode, 0, reqHeaders)
 	return c, res == tiktokAPIMatched
 }
 
@@ -275,8 +275,9 @@ const (
 )
 
 // tiktokCandidateFromAPIBodyResult is tiktokCandidateFromAPIBody with the
-// result and the episode numbers the body listed.
-func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode int, reqHeaders map[string]string) (browserMediaCandidate, tiktokAPIResult, []int) {
+// result and the episode numbers the body listed; maxShortSide is the 最高
+// 720p limit (0 = the best stream).
+func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode, maxShortSide int, reqHeaders map[string]string) (browserMediaCandidate, tiktokAPIResult, []int) {
 	isDetail := strings.Contains(strings.ToLower(apiURL), "/api/item/detail")
 	items := tiktokDramaItemsFromJSON(body)
 	if len(items) == 0 {
@@ -296,13 +297,18 @@ func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode int, r
 			continue
 		}
 		title := strings.TrimSpace(item.DramaInfo.DramaName)
+		st, _ := chooseTikTokDramaStream(streams, maxShortSide)
 		kind := "TikTok API MP4"
-		if st := streams[0]; st.Width > 0 && st.Height > 0 {
+		if st.Width > 0 && st.Height > 0 {
 			// The chosen size and how many the episode offered, for the log.
-			kind = fmt.Sprintf("TikTok API MP4 %d×%d，%d 種畫質中最高", st.Width, st.Height, len(streams))
+			which := "最高"
+			if maxShortSide > 0 {
+				which = fmt.Sprintf("%dp 以內最高", maxShortSide)
+			}
+			kind = fmt.Sprintf("TikTok API MP4 %d×%d，%d 種畫質中%s", st.Width, st.Height, len(streams), which)
 		}
 		return browserMediaCandidate{
-			URL:            streams[0].URLs[0],
+			URL:            st.URLs[0],
 			Title:          title,
 			Kind:           kind,
 			RequestType:    "api",

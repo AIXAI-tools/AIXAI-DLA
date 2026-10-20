@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.6"
+	appVersion = "4.2.7"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -584,6 +584,9 @@ type app struct {
 	lastCaptureStreams []string
 	// episodeGuard is set while one ?ep=N episode is captured (episode_capture.go).
 	episodeGuard *episodeGuard
+	// captureMaxShortSide is the 最高 720p limit of the current browser
+	// capture (0 = best), for streams the page data lists by size.
+	captureMaxShortSide int
 	// lastYtGeneric: the latest yt-dlp run used its generic (any web page)
 	// extractor, so its result is a guess and is checked strictly.
 	lastYtGeneric bool
@@ -1079,7 +1082,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	a.captureStartFailed.Store(false)
 	a.loginCancelled.Store(false)
 	pacer := newSafePacer()
-	episodes := newEpisodeBatch()
+	episodes := a.savedEpisodeBatch()
 	envRefreshed := false
 	unsupportedHosts := map[string]bool{}
 	a.seqHashes = nil
@@ -1970,19 +1973,39 @@ func sortTikTokDramaStreams(streams []tiktokDramaStream) {
 	}
 }
 
-func chooseTikTokDramaStream(streams []tiktokDramaStream, maxHeight int) (tiktokDramaStream, error) {
+// chooseTikTokDramaStream picks the best stream whose short side is at most
+// maxShortSide (0 = no limit): 720p means 720 lines on the short side, so a
+// portrait 720×1252 video counts as 720p.
+func chooseTikTokDramaStream(streams []tiktokDramaStream, maxShortSide int) (tiktokDramaStream, error) {
 	if len(streams) == 0 {
 		return tiktokDramaStream{}, errors.New("分集資訊中沒有可直接取得的影片網址")
 	}
-	if maxHeight <= 0 {
+	if maxShortSide <= 0 {
 		return streams[0], nil
 	}
 	for _, st := range streams {
-		if st.Height > 0 && st.Height <= maxHeight {
+		if s := shortSide(st.Width, st.Height); s > 0 && s <= maxShortSide {
 			return st, nil
 		}
 	}
 	return streams[len(streams)-1], nil
+}
+
+// shortSide is the smaller of width and height (height alone when the width
+// is unknown).
+func shortSide(width, height int) int {
+	if width > 0 && height > 0 && width < height {
+		return width
+	}
+	return height
+}
+
+// maxShortSideFor is the 最高 720p limit of a mode (0 = none).
+func maxShortSideFor(mode int) int {
+	if mode == 5 {
+		return 720
+	}
+	return 0
 }
 
 func (a *app) downloadDirectMedia(ctx context.Context, urls []string, dest, referer, cookie string) error {
@@ -2114,11 +2137,7 @@ func (a *app) runTikTokShortDramaDirect(ctx context.Context, rawURL string, mode
 		}
 		return nil
 	}
-	maxHeight := 0
-	if mode == 5 {
-		maxHeight = 720
-	}
-	selected, err := chooseTikTokDramaStream(streams, maxHeight)
+	selected, err := chooseTikTokDramaStream(streams, maxShortSideFor(mode))
 	if err != nil {
 		return err
 	}
@@ -3673,7 +3692,8 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		}
 		args = append(args, "-f", strings.TrimSpace(formatID), rawURL)
 	case 5:
-		args = append(args, "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", rawURL)
+		// yt-dlp's "res" is the short side: a portrait 720×1280 video is 720p.
+		args = append(args, "-S", "res:720", "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
 	default:
 		args = append(args, rawURL)
 	}

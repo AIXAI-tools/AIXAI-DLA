@@ -580,6 +580,7 @@ func hostOnly(raw string) string {
 }
 
 func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode int, formatID, output string, cfg settings) error {
+	a.captureMaxShortSide = maxShortSideFor(mode)
 	candidate, err := a.captureMediaWithBrowser(ctx, rawURL, cfg.CookieFile)
 	if err != nil {
 		return err

@@ -30,3 +30,26 @@ func TestSeqFilesSurviveResume(t *testing.T) {
 		t.Fatal("nil map without a task")
 	}
 }
+
+func TestEpisodeBatchSurvivesResume(t *testing.T) {
+	j := &job{ID: 2}
+	a := &app{appShared: &appShared{}, job: j}
+	a.rememberEpisode(1, "hash1", []string{"cdn.example/ep1.mp4"})
+	data, err := json.Marshal(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back job
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	w := &app{appShared: a.appShared, job: &back}
+	b := w.savedEpisodeBatch()
+	if b.byHash["hash1"] != 1 || b.byStream["cdn.example/ep1.mp4"] != 1 {
+		t.Fatalf("batch after resume = %#v", b)
+	}
+	g := &episodeGuard{batch: b, ep: 2}
+	if g.streamUsedBy("https://cdn.example/ep1.mp4?sig=new") != 1 {
+		t.Error("stream saved before the pause not recognised")
+	}
+}

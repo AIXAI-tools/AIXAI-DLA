@@ -153,15 +153,61 @@ func (a *app) runEpisodeCapture(ctx context.Context, batch *episodeBatch, rawURL
 	if mode == 3 || a.lastCaptureFile == "" {
 		return nil
 	}
-	if sum, hashErr := fileSHA256(a.lastCaptureFile); hashErr == nil {
+	sum, hashErr := fileSHA256(a.lastCaptureFile)
+	if hashErr == nil {
 		batch.byHash[sum] = ep
+	} else {
+		sum = ""
 	}
+	var keys []string
 	for _, s := range a.lastCaptureStreams {
 		if s != "" {
 			batch.byStream[streamPathKey(s)] = ep
+			keys = append(keys, streamPathKey(s))
 		}
 	}
+	a.rememberEpisode(ep, sum, keys)
 	return nil
+}
+
+// rememberEpisode stores a saved ?ep=N episode in the task as well, so a task
+// paused, moved aside or reopened still knows the episodes it saved.
+func (a *app) rememberEpisode(ep int, sum string, streams []string) {
+	if a.job == nil {
+		return
+	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
+	if sum != "" {
+		if a.job.EpisodeHashes == nil {
+			a.job.EpisodeHashes = map[string]int{}
+		}
+		a.job.EpisodeHashes[sum] = ep
+	}
+	for _, k := range streams {
+		if a.job.EpisodeStreams == nil {
+			a.job.EpisodeStreams = map[string]int{}
+		}
+		a.job.EpisodeStreams[k] = ep
+	}
+}
+
+// savedEpisodeBatch is the ?ep=N comparison a run starts from: the episodes
+// the task saved in its earlier runs.
+func (a *app) savedEpisodeBatch() *episodeBatch {
+	b := newEpisodeBatch()
+	if a.job == nil {
+		return b
+	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
+	for k, ep := range a.job.EpisodeHashes {
+		b.byHash[k] = ep
+	}
+	for k, ep := range a.job.EpisodeStreams {
+		b.byStream[k] = ep
+	}
+	return b
 }
 
 func isEpisodeRepeated(err error) bool {

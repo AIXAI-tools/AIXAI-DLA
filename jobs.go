@@ -67,6 +67,10 @@ type job struct {
 	AutoResume bool `json:"autoResume,omitempty"`
 	// SeqHashes are the files a 連續集數 task already checked (media_check.go).
 	SeqHashes map[string]seqRecord `json:"seqHashes,omitempty"`
+	// EpisodeHashes / EpisodeStreams: the ?ep=N episodes already saved, by
+	// file hash and by stream (episode_capture.go).
+	EpisodeHashes  map[string]int `json:"episodeHashes,omitempty"`
+	EpisodeStreams map[string]int `json:"episodeStreams,omitempty"`
 
 	notes  []string // shown once, when the task first starts
 	status string   // latest status line while running
