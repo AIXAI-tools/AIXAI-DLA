@@ -147,3 +147,32 @@ func jobIDs(jobs []*job) string {
 	}
 	return b.String()
 }
+
+func TestEpisodeLabelSurvivesLongTitle(t *testing.T) {
+	for _, n := range []int{150, 156, 158, 160, 200} {
+		title := strings.Repeat("劇", n)
+		names := map[string]bool{}
+		for _, ep := range []int{1, 2, 10, 100} {
+			for _, nm := range []episodeNaming{{}, {Format: "zh", Sep: "space"}, {Format: "Episode", Sep: "space_dash"}} {
+				got := nm.join(title, ep)
+				if len([]rune(got)) > maxBaseNameRunes {
+					t.Errorf("title %d ep %d: %d runes", n, ep, len([]rune(got)))
+				}
+				if !strings.HasSuffix(got, nm.label(ep)) {
+					t.Errorf("title %d ep %d: label lost in %q", n, ep, got)
+				}
+				names[got] = true
+			}
+		}
+		if len(names) != 12 {
+			t.Errorf("title %d: %d distinct names, want 12", n, len(names))
+		}
+	}
+	if got := capturedOutputBase("https://x.example/play/9/2", strings.Repeat("a", 170)); !strings.HasSuffix(got, "_E002") {
+		t.Errorf("capturedOutputBase lost the episode: %q", got)
+	}
+	// A cut that ends in a space or dot must not leave it before the label.
+	if got := withEpisodeLabel(strings.Repeat("a", 154)+" .x", "_E001"); strings.Contains(got, " _E") || strings.Contains(got, "._E") {
+		t.Errorf("trailing space or dot kept: %q", got)
+	}
+}

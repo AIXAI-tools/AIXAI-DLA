@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.5"
+	appVersion = "4.2.6"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -508,6 +508,12 @@ type appShared struct {
 	logWakePending    atomic.Bool
 	statusWakePending atomic.Bool
 
+	// installing is set while an update or rollback runs (updater.go): a
+	// second one would share the .new/.old files and resume the paused tasks.
+	installing atomic.Bool
+	// persistWarned: a failed save was already reported (persist.go).
+	persistWarned atomic.Bool
+
 	closing      atomic.Bool
 	shutdownOnce sync.Once
 	resourceOnce sync.Once
@@ -674,10 +680,6 @@ func utf16Ptr(s string) *uint16 {
 	p, _ := syscall.UTF16PtrFromString(s)
 	return p
 }
-
-func rgb(r, g, b byte) uintptr { return uintptr(r) | uintptr(g)<<8 | uintptr(b)<<16 }
-func loword(v uintptr) uint16  { return uint16(v & 0xffff) }
-func hiword(v uintptr) uint16  { return uint16((v >> 16) & 0xffff) }
 
 func main() {
 	// Win32 windows, their message queue, and COM STA calls are thread-affine.
@@ -1082,7 +1084,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 	unsupportedHosts := map[string]bool{}
 	a.seqHashes = nil
 	if cfg.Sequence {
-		a.seqHashes = map[string]seqFile{}
+		a.seqHashes = a.savedSeqFiles()
 	}
 	defer func() { a.seqHashes, a.diag = nil, nil }()
 	if safe {
@@ -1857,8 +1859,12 @@ func cookieHeaderFromFile(path, host string) string {
 	host = strings.ToLower(strings.TrimPrefix(host, "www."))
 	pairs := []string{}
 	seen := map[string]bool{}
+	now := time.Now().Unix()
 	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
+		// "#HttpOnly_" marks an HttpOnly cookie (often the sign-in one), not
+		// a comment; cdpCookiesFromFile reads it the same way.
+		line = strings.TrimPrefix(line, "#HttpOnly_")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -1867,8 +1873,12 @@ func cookieHeaderFromFile(path, host string) string {
 			continue
 		}
 		domain := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fields[0])), ".")
-		if domain == "" || !(host == domain || strings.HasSuffix(host, "."+domain)) {
+		subdomains := !strings.EqualFold(strings.TrimSpace(fields[1]), "FALSE")
+		if domain == "" || !(host == domain || subdomains && strings.HasSuffix(host, "."+domain)) {
 			continue
+		}
+		if exp, err := strconv.ParseInt(strings.TrimSpace(fields[4]), 10, 64); err == nil && exp > 0 && exp < now {
+			continue // expired
 		}
 		name := strings.TrimSpace(fields[5])
 		value := strings.TrimSpace(fields[6])
@@ -2117,7 +2127,7 @@ func (a *app) runTikTokShortDramaDirect(ctx context.Context, rawURL string, mode
 	}
 	base := "Video_" + dramaID + "_E" + fmt.Sprintf("%03d", episode)
 	if clean := safeWindowsBaseName(title); clean != "" {
-		base = safeWindowsBaseName(clean + "_E" + fmt.Sprintf("%03d", episode))
+		base = withEpisodeLabel(clean, fmt.Sprintf("_E%03d", episode))
 	}
 	dest := filepath.Join(output, base+".mp4")
 	cookie := cookieHeaderFromFile(cfg.CookieFile, "tiktok.com")
@@ -3258,30 +3268,6 @@ func firstNonEmptyString(m map[string]any, keys ...string) string {
 	return ""
 }
 
-func fetchWebPage(ctx context.Context, rawURL string) (string, error) {
-	client := &http.Client{Timeout: 90 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9,en;q=0.7")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("網頁 HTTP %s", resp.Status)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
 func extractAssignedJSONObject(text, marker string) string {
 	idx := strings.Index(text, marker)
 	if idx < 0 {
@@ -3439,11 +3425,28 @@ func safeWindowsBaseName(name string) string {
 	invalid := regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
 	name = invalid.ReplaceAllString(name, "_")
 	name = strings.Trim(name, " .")
-	if len([]rune(name)) > 160 {
+	if len([]rune(name)) > maxBaseNameRunes {
 		r := []rune(name)
-		name = string(r[:160])
+		name = string(r[:maxBaseNameRunes])
 	}
 	return name
+}
+
+// maxBaseNameRunes is the longest name safeWindowsBaseName keeps.
+const maxBaseNameRunes = 160
+
+// withEpisodeLabel joins name and an episode label such as "_E003" within
+// maxBaseNameRunes, shortening the name so the episode number is never cut
+// off (two episodes of a long title would otherwise get the same file).
+func withEpisodeLabel(name, label string) string {
+	r := []rune(safeWindowsBaseName(name))
+	if room := maxBaseNameRunes - len([]rune(label)); len(r) > room {
+		if room < 0 {
+			room = 0
+		}
+		r = []rune(strings.TrimRight(string(r[:room]), " ."))
+	}
+	return safeWindowsBaseName(string(r) + label)
 }
 
 func (a *app) retryWithAuthentication(ctx context.Context, rawURL string, mode int, formatID, output string, cfg settings, originalErr error) error {
@@ -4569,25 +4572,6 @@ func multiString(parts ...string) []uint16 {
 	return out
 }
 
-func getText(hwnd uintptr) string {
-	n, _, _ := procGetWindowTextLengthW.Call(hwnd)
-	buf := make([]uint16, int(n)+1)
-	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	return syscall.UTF16ToString(buf)
-}
-func setText(hwnd uintptr, text string) {
-	procSetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))))
-}
-func isChecked(hwnd uintptr) bool {
-	r, _, _ := procSendMessageW.Call(hwnd, BM_GETCHECK, 0, 0)
-	return r == BST_CHECKED
-}
-func boolToUintptr(v bool) uintptr {
-	if v {
-		return 1
-	}
-	return 0
-}
 func messageBox(hwnd uintptr, title, text string, flags uint32) int {
 	r, _, _ := procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr(text))), uintptr(unsafe.Pointer(utf16Ptr(title))), uintptr(flags))
 	return int(r)

@@ -163,7 +163,8 @@ func subtitleNames(videoBase string, subs []pageSubtitle) []string {
 		}
 	}
 	names := make([]string, len(subs))
-	used := map[string]bool{}
+	// Windows file names ignore case: "en" and "EN" are the same file.
+	used := map[string]bool{strings.ToLower(videoBase): true}
 	for i, s := range subs {
 		name := videoBase
 		if i != primary {
@@ -171,12 +172,16 @@ func subtitleNames(videoBase string, subs []pageSubtitle) []string {
 			if tag == "" {
 				tag = safeWindowsBaseName(s.Label)
 			}
-			if tag == "" || used[videoBase+"."+tag] {
+			if tag == "" || used[strings.ToLower(videoBase+"."+tag)] {
 				tag = strconv.Itoa(i + 1)
 			}
+			// The number may be taken too (a language tagged "4"): count on.
+			for n := i + 2; used[strings.ToLower(videoBase+"."+tag)]; n++ {
+				tag = strconv.Itoa(n)
+			}
 			name = videoBase + "." + tag
+			used[strings.ToLower(name)] = true
 		}
-		used[name] = true
 		names[i] = name
 	}
 	return names

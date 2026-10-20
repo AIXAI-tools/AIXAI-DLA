@@ -78,11 +78,7 @@ func (a *app) saveFailedLocked() {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(a.appDir, 0755)
-	tmp := a.failedPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0644) == nil {
-		_ = os.Rename(tmp, a.failedPath())
-	}
+	a.notePersistError("「無法下載的網址」清單", writeFileAtomic(a.failedPath(), data))
 }
 
 func (a *app) failedViews() []failedView {

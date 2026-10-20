@@ -42,6 +42,13 @@ func titleBudget(dir string, fixed int) int {
 	return n
 }
 
+// saveFolderTooLong reports whether dir leaves less than minTitleBytes for
+// the file name: titleBudget then still uses minTitleBytes and the full path
+// can pass MAX_PATH, so the user is told to pick a shorter folder.
+func saveFolderTooLong(dir string) bool {
+	return maxPlayablePath-pathUnits(filepath.Clean(dir))-1-pathIDReserve-pathSuffixReserve < minTitleBytes
+}
+
 // outputTemplates returns the single-video and playlist output templates
 // for a save folder (title at most 200 bytes, as before).
 func outputTemplates(dir string) (single, playlist string) {

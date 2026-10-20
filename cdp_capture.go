@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,29 +259,216 @@ func isTikTokDramaAPI(raw string) bool {
 // tiktokCandidateFromAPIBody picks the requested episode out of a TikTok API
 // response body and turns its best stream into a capture candidate.
 func tiktokCandidateFromAPIBody(body []byte, apiURL string, episode int, reqHeaders map[string]string) (browserMediaCandidate, bool) {
+	c, res, _ := tiktokCandidateFromAPIBodyResult(body, apiURL, episode, reqHeaders)
+	return c, res == tiktokAPIMatched
+}
+
+// tiktokAPIResult is what one TikTok API response held for the episode; the
+// capture counts them so a failed episode says why (never the addresses).
+type tiktokAPIResult int
+
+const (
+	tiktokAPIMatched   tiktokAPIResult = iota
+	tiktokAPIUnparsed                  // no item list in the body
+	tiktokAPINoEpisode                 // items, but not this episode
+	tiktokAPINoStream                  // this episode, without a playable address
+)
+
+// tiktokCandidateFromAPIBodyResult is tiktokCandidateFromAPIBody with the
+// result and the episode numbers the body listed.
+func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode int, reqHeaders map[string]string) (browserMediaCandidate, tiktokAPIResult, []int) {
 	isDetail := strings.Contains(strings.ToLower(apiURL), "/api/item/detail")
-	for _, item := range tiktokDramaItemsFromJSON(body) {
+	items := tiktokDramaItemsFromJSON(body)
+	if len(items) == 0 {
+		return browserMediaCandidate{}, tiktokAPIUnparsed, nil
+	}
+	var listed []int
+	res := tiktokAPINoEpisode
+	for _, item := range items {
 		epNo := item.DramaInfo.DramaVideoData.EpisodeNumber
+		listed = append(listed, epNo)
 		if epNo != episode && !(isDetail && epNo == 0) {
 			continue
 		}
 		streams := tiktokDramaItemStreams(item)
 		if len(streams) == 0 {
+			res = tiktokAPINoStream
 			continue
 		}
 		title := strings.TrimSpace(item.DramaInfo.DramaName)
+		kind := "TikTok API MP4"
+		if st := streams[0]; st.Width > 0 && st.Height > 0 {
+			// The chosen size and how many the episode offered, for the log.
+			kind = fmt.Sprintf("TikTok API MP4 %d×%d，%d 種畫質中最高", st.Width, st.Height, len(streams))
+		}
 		return browserMediaCandidate{
 			URL:            streams[0].URLs[0],
 			Title:          title,
-			Kind:           "TikTok API MP4",
+			Kind:           kind,
 			RequestType:    "api",
 			RequestHeaders: reqHeaders,
 			ContentType:    "video/mp4",
 			Score:          200,
 			SeenAt:         time.Now(),
-		}, true
+		}, tiktokAPIMatched, listed
 	}
-	return browserMediaCandidate{}, false
+	return browserMediaCandidate{}, res, listed
+}
+
+// tiktokCaptureDiag counts what a TikTok episode capture saw: the API
+// responses and why none gave the episode. Only paths, statuses and counts
+// are kept: no query strings, cookies or stream addresses.
+type tiktokCaptureDiag struct {
+	mu         sync.Mutex
+	apis       map[string]int // "path status" → count, any tiktok.com/api/ call
+	order      []string
+	known      int // finished known API responses (status 200)
+	readFail   int
+	results    map[tiktokAPIResult]int
+	episodes   map[int]bool
+	otherMedia int // media requests ignored because they are not the episode's
+	statuses   []string
+}
+
+func newTikTokCaptureDiag() *tiktokCaptureDiag {
+	return &tiktokCaptureDiag{apis: map[string]int{}, results: map[tiktokAPIResult]int{}, episodes: map[int]bool{}}
+}
+
+func (d *tiktokCaptureDiag) api(raw string, status int) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return
+	}
+	key := fmt.Sprintf("%s %d", u.Path, status)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.apis[key]; !ok {
+		if len(d.order) >= 12 {
+			return
+		}
+		d.order = append(d.order, key)
+	}
+	d.apis[key]++
+}
+
+func (d *tiktokCaptureDiag) knownAPI() {
+	d.mu.Lock()
+	d.known++
+	d.mu.Unlock()
+}
+
+func (d *tiktokCaptureDiag) read(ok bool, res tiktokAPIResult, listed []int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !ok {
+		d.readFail++
+		return
+	}
+	d.results[res]++
+	for _, n := range listed {
+		d.episodes[n] = true
+	}
+}
+
+// apiStatus keeps a non-zero status code (and short message) the API gave,
+// e.g. a rate limit answered with HTTP 200.
+func (d *tiktokCaptureDiag) apiStatus(body []byte) {
+	var st tiktokDramaResponse
+	if json.Unmarshal(body, &st) != nil {
+		return
+	}
+	code, msg := st.StatusCode, st.StatusMessage
+	if code == 0 {
+		code = st.StatusCodeAlt
+	}
+	if msg == "" {
+		msg = st.StatusMsgAlt
+	}
+	if code == 0 {
+		return
+	}
+	note := strconv.Itoa(code)
+	if msg = strings.TrimSpace(msg); msg != "" {
+		if r := []rune(msg); len(r) > 40 {
+			msg = string(r[:40])
+		}
+		note += " " + msg
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, s := range d.statuses {
+		if s == note {
+			return
+		}
+	}
+	if len(d.statuses) < 3 {
+		d.statuses = append(d.statuses, note)
+	}
+}
+
+func (d *tiktokCaptureDiag) media() {
+	d.mu.Lock()
+	d.otherMedia++
+	d.mu.Unlock()
+}
+
+// noKnownAPI reports whether the page never answered with a known API call.
+func (d *tiktokCaptureDiag) noKnownAPI() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.known == 0
+}
+
+// summary is one line for the log and the diagnostics.
+func (d *tiktokCaptureDiag) summary(episode int) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var b strings.Builder
+	fmt.Fprintf(&b, "分集資料回應 %d 次", d.known)
+	if d.known > 0 {
+		fmt.Fprintf(&b, "（讀取失敗 %d、格式無法解析 %d、沒有第 %d 集 %d、本集沒有影片網址 %d）",
+			d.readFail, d.results[tiktokAPIUnparsed], episode, d.results[tiktokAPINoEpisode], d.results[tiktokAPINoStream])
+	}
+	if len(d.episodes) > 0 {
+		eps := make([]int, 0, len(d.episodes))
+		for n := range d.episodes {
+			eps = append(eps, n)
+		}
+		sort.Ints(eps)
+		fmt.Fprintf(&b, "；回應中的集數：%s", episodeRanges(eps))
+	}
+	if len(d.order) > 0 {
+		parts := make([]string, 0, len(d.order))
+		for _, k := range d.order {
+			parts = append(parts, fmt.Sprintf("%s×%d", k, d.apis[k]))
+		}
+		b.WriteString("；頁面 API：" + strings.Join(parts, "、"))
+	} else {
+		b.WriteString("；頁面沒有呼叫任何 API")
+	}
+	if len(d.statuses) > 0 {
+		b.WriteString("；API 狀態碼：" + strings.Join(d.statuses, "、"))
+	}
+	fmt.Fprintf(&b, "；略過的其他影片請求 %d 個", d.otherMedia)
+	return b.String()
+}
+
+// episodeRanges writes sorted numbers as "1-24, 26".
+func episodeRanges(nums []int) string {
+	var parts []string
+	for i := 0; i < len(nums); {
+		j := i
+		for j+1 < len(nums) && nums[j+1] == nums[j]+1 {
+			j++
+		}
+		if j > i {
+			parts = append(parts, fmt.Sprintf("%d-%d", nums[i], nums[j]))
+		} else {
+			parts = append(parts, strconv.Itoa(nums[i]))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ", ")
 }
 
 // cdpCookiesFromFile converts a Netscape cookies.txt (exported by the user from

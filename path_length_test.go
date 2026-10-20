@@ -45,3 +45,26 @@ func TestPathUnitsCountsSurrogates(t *testing.T) {
 		t.Fatalf("pathUnits = %d, want 4", n)
 	}
 }
+
+func TestSaveFolderTooLong(t *testing.T) {
+	if saveFolderTooLong(`C:\Users\me\Videos`) {
+		t.Error("short folder reported too long")
+	}
+	if !saveFolderTooLong(`C:\` + strings.Repeat("a", 150)) {
+		t.Error("150-character folder not reported")
+	}
+}
+
+func TestSeriesNameFitsPathBudget(t *testing.T) {
+	dir := `C:\` + strings.Repeat("b", 120)
+	cfg := settings{Sequence: true, SequenceStart: 1, SequenceEnd: 2, SeriesName: strings.Repeat("劇", 150), EpisodeFormat: "zh", EpisodeSep: "space"}
+	a := &app{cfg: cfg}
+	got := a.customSequenceTemplate(cfg, dir)
+	if !strings.HasSuffix(got, " 第001集.%(ext)s") {
+		t.Fatalf("label lost: %q", got)
+	}
+	name := strings.TrimSuffix(got, ".%(ext)s")
+	if total := pathUnits(dir) + 1 + pathUnits(name) + len(".mp4"); total > maxPlayablePath {
+		t.Errorf("full path %d > %d", total, maxPlayablePath)
+	}
+}

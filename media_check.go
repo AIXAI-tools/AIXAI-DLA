@@ -56,10 +56,32 @@ var (
 	intermediateFormatRE = regexp.MustCompile(`(?i)\.f[0-9a-z_-]+\.[a-z0-9]+$`)
 )
 
-// seqFile is a checked file of a sequence batch: the item that saved it.
+// seqFile is a checked file of a sequence batch: the item (of the whole
+// task, not of this run) that saved it.
 type seqFile struct {
 	item int
 	path string
+}
+
+// seqRecord is a seqFile kept in the task (tasks.json), so a task paused,
+// moved aside by 優先下載 or reopened after a restart still compares the new
+// episodes with the ones saved before.
+type seqRecord struct {
+	Item int    `json:"item"`
+	Path string `json:"path"`
+}
+
+// rememberSeqFile stores a checked file in the task as well.
+func (a *app) rememberSeqFile(sum string, f seqFile) {
+	if a.job == nil {
+		return
+	}
+	a.jobsMu.Lock()
+	if a.job.SeqHashes == nil {
+		a.job.SeqHashes = map[string]seqRecord{}
+	}
+	a.job.SeqHashes[sum] = seqRecord{Item: f.item, Path: f.path}
+	a.jobsMu.Unlock()
 }
 
 // mediaInfo is what ffprobe reports about one file.
@@ -427,7 +449,7 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 			if err != nil {
 				continue
 			}
-			if first, ok := a.seqHashes[sum]; ok && first.item != a.curItem {
+			if first, ok := a.seqHashes[sum]; ok && first.item != a.itemOffset+a.curItem {
 				reason := fmt.Sprintf("與第 %d 項下載到的影片完全相同", first.item+1)
 				a.diagNote("檔案檢查 ✗ " + reason)
 				if strings.EqualFold(filepath.Clean(first.path), filepath.Clean(c.path)) {
@@ -443,7 +465,9 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 			sums[sum] = c.path
 		}
 		for sum, path := range sums {
-			a.seqHashes[sum] = seqFile{item: a.curItem, path: path}
+			f := seqFile{item: a.itemOffset + a.curItem, path: path}
+			a.seqHashes[sum] = f
+			a.rememberSeqFile(sum, f)
 		}
 	}
 	paths := make([]string, len(passed))

@@ -522,6 +522,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		listed = a.pageEpisodeHint
 	}
 	hasListed := len(listed.Streams) > 0 || len(listed.Others) > 0
+	var tikDiag *tiktokCaptureDiag
+	if isTikTokDrama {
+		tikDiag = newTikTokCaptureDiag()
+	}
 
 	states := map[string]*cdpRequestState{}
 	candidates := make(chan browserMediaCandidate, 128)
@@ -559,18 +563,24 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	inspectTikTokAPI := func(requestID, apiURL string, reqHeaders map[string]string) {
 		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
 		if err != nil || reply.Result == nil {
+			tikDiag.read(false, 0, nil)
 			return
 		}
 		body := cdpString(reply.Result, "body")
 		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
 			raw, err := base64.StdEncoding.DecodeString(body)
 			if err != nil {
+				tikDiag.read(false, 0, nil)
 				return
 			}
 			body = string(raw)
 		}
-		c, ok := tiktokCandidateFromAPIBody([]byte(body), apiURL, tiktokEpisode, reqHeaders)
-		if !ok {
+		c, res, listedEps := tiktokCandidateFromAPIBodyResult([]byte(body), apiURL, tiktokEpisode, reqHeaders)
+		tikDiag.read(true, res, listedEps)
+		if res != tiktokAPIMatched {
+			tikDiag.apiStatus([]byte(body))
+		}
+		if res != tiktokAPIMatched {
 			return
 		}
 		c.PageURL = rawURL
@@ -748,10 +758,14 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			}
 			stateMu.Lock()
 			st := states[reqID]
+			if st != nil && strings.Contains(strings.ToLower(st.URL), "tiktok.com/api/") {
+				tikDiag.api(st.URL, st.Status)
+			}
 			ok := st != nil && st.Status == 200 && isTikTokDramaAPI(st.URL)
 			var apiURL string
 			reqHeaders := map[string]string{}
 			if ok {
+				tikDiag.knownAPI()
 				apiURL = st.URL
 				for k, v := range st.RequestHeaders {
 					reqHeaders[k] = v
@@ -873,13 +887,14 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			// Episode-matched TikTok API streams are authoritative: return at once
 			// instead of risking a preloaded neighbouring episode.
 			if c.Score >= 200 {
-				a.postLog(fmt.Sprintf("✓ 已從頁面資料取得第 %d 集影片（%s）。\r\n", tiktokEpisode, hostOnly(c.URL)))
+				a.postLog(fmt.Sprintf("✓ 已從頁面資料取得第 %d 集影片（%s；%s）。\r\n", tiktokEpisode, hostOnly(c.URL), c.Kind))
 				return c, nil
 			}
 			// For episode pages that require sign-in only the episode-matched stream is
 			// trusted. Generic media requests on that page are preloaded
 			// recommendations or other clips, never reliably the episode.
 			if isTikTokDrama {
+				tikDiag.media()
 				continue
 			}
 			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode) || listed.matches(c.URL)
@@ -943,6 +958,12 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				return finish(best), nil
 			}
 			if isTikTokDrama {
+				summary := tikDiag.summary(tiktokEpisode)
+				a.postLog("ℹ 分集擷取診斷：" + summary + "\r\n")
+				a.diagNote("分集擷取：" + summary)
+				if tikDiag.noKnownAPI() {
+					return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內頁面沒有送出第 %d 集的分集資料；網站的資料格式可能已變更", tiktokEpisode)
+				}
 				return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內沒有取得第 %d 集的影片網址；這一集可能無法以你的帳號存取", tiktokEpisode)
 			}
 			adMu.Lock()

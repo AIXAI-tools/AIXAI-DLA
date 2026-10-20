@@ -82,3 +82,27 @@ func TestUpgradeWithQualityLabelOnly(t *testing.T) {
 		t.Fatal("720p limit must not upgrade")
 	}
 }
+
+func TestBetterVariantComparesEveryList(t *testing.T) {
+	old := []byte(`{"s":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/b.mp4","width":1080,"height":1920}]}`)
+	newer := []byte(`{"s":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/c.mp4","width":360,"height":640}]}`)
+	best, played, ok := betterVariantFromPageJSON([][]byte{old, newer}, "https://x.example/a.mp4", 0)
+	if !ok || best.URL != "https://x.example/b.mp4" || played.URL != "https://x.example/a.mp4" {
+		t.Fatalf("older response's larger variant missed: %+v %+v %v", best, played, ok)
+	}
+	// Two lists in one response (per codec): the same answer every time.
+	one := []byte(`{"h264":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/c.mp4","width":360,"height":640}],"h265":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/b.mp4","width":1080,"height":1920}]}`)
+	for i := 0; i < 50; i++ {
+		best, _, ok := betterVariantFromPageJSON([][]byte{one}, "https://x.example/a.mp4", 0)
+		if !ok || best.URL != "https://x.example/b.mp4" {
+			t.Fatalf("run %d: %+v %v", i, best, ok)
+		}
+	}
+	// Equal sizes in two lists: always the same (smaller) address.
+	tie := []byte(`{"p":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/z.mp4","width":1080,"height":1920}],"q":[{"url":"https://x.example/a.mp4","width":576,"height":1024},{"url":"https://x.example/m.mp4","width":1080,"height":1920}]}`)
+	for i := 0; i < 50; i++ {
+		if best, _, _ := betterVariantFromPageJSON([][]byte{tie}, "https://x.example/a.mp4", 0); best.URL != "https://x.example/m.mp4" {
+			t.Fatalf("run %d: tie gave %s", i, best.URL)
+		}
+	}
+}

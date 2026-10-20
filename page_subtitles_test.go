@@ -55,6 +55,13 @@ func TestSubtitleNames(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("names = %#v, want %#v", got, want)
 	}
+	// The fallback number already taken by a language, and a tag that only
+	// differs in case (one file on Windows).
+	got = subtitleNames("v", []pageSubtitle{{Default: true}, {Lang: "4"}, {Lang: "en"}, {Lang: "en"}, {Lang: "EN"}})
+	want = []string{"v", "v.4", "v.en", "v.5", "v.6"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("names = %#v, want %#v", got, want)
+	}
 }
 
 func TestSubtitleExt(t *testing.T) {

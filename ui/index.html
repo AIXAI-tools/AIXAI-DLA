@@ -1076,7 +1076,7 @@ window.aixai={ on(name,p){
 }};
 
 /* ---------------- update dialog ---------------- */
-$("btnUpdate").onclick=()=>{ $("dlgUpdate").showModal(); $("relState").textContent="正在讀取版本清單…"; $("relState").classList.remove("hidden"); $("relList").innerHTML=""; $("btnInstall").disabled=true; goCheckUpdates(); };
+$("btnUpdate").onclick=()=>{ $("dlgUpdate").showModal(); if(state.installing) return; $("relState").textContent="正在讀取版本清單…"; $("relState").classList.remove("hidden"); $("relList").innerHTML=""; $("btnInstall").disabled=true; goCheckUpdates(); };
 $("startupUpdCheck").onchange=()=>goSetStartupUpdateCheck($("startupUpdCheck").checked);
 $("btnRelPage").onclick=()=>goOpenURL((state.releases&&state.releases.releasesUrl)||"https://github.com/");
 function renderReleases(r){
@@ -1092,7 +1092,7 @@ function renderReleases(r){
       <div><div class="t">${esc(it.tag)} ${badges}</div><div class="d">${esc(it.published)} · ${esc(it.title)}${it.installable?"":" · 此版本沒有可自動安裝的檔案"}</div>${it.notes?`<pre>${esc(it.notes)}</pre>`:""}</div></label>`;
   }).join("");
   const sync=()=>{ const sel=document.querySelector('input[name=rel]:checked'); const it=sel&&r.items.find(x=>x.tag===sel.value);
-    $("btnInstall").disabled=!it; $("btnInstall").textContent = !it ? "安裝所選版本" : (it.newer ? `更新到 ${it.tag}` : `退回到 ${it.tag}`); };
+    $("btnInstall").disabled=!it||state.installing; $("btnInstall").textContent = !it ? "安裝所選版本" : (it.newer ? `更新到 ${it.tag}` : `退回到 ${it.tag}`); };
   $("relList").onchange=sync; sync();
   if(state.preselectTag){ // opened from a reply: select that version
     const tag=state.preselectTag; state.preselectTag=null;
@@ -1125,13 +1125,14 @@ $("btnInstall").onclick=()=>{
       : "將暫時暫停所有的下載任務，更新完會自動恢復！";
     if(!confirm([`目前有 ${active} 個下載任務進行中。`, "", how, "（你自己暫停的任務維持暫停）", "", "確定要繼續嗎？"].join("\n"))) return;
   }
+  state.installing=true; // 安裝中換選版本、重開視窗都不再啟用按鈕（後端也會擋第二次）
   $("btnInstall").disabled=true; $("updProgress").classList.remove("hidden"); $("updBar").style.width="0"; $("updMsg").textContent="準備中…";
   goInstallRelease(sel.value);
 };
 function renderUpdate(p){
   $("updProgress").classList.remove("hidden"); $("updBar").style.width=p.percent+"%"; $("updMsg").textContent=p.message;
   $("updMsg").style.color = p.stage==="error" ? "var(--danger)" : "var(--muted)";
-  if(p.stage==="error") $("btnInstall").disabled=false;
+  if(p.stage==="error"){ state.installing=false; $("btnInstall").disabled=!document.querySelector('input[name=rel]:checked'); }
 }
 
 /* ---------------- feedback dialog ---------------- */

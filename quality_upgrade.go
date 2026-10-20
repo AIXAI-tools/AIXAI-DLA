@@ -183,29 +183,49 @@ func bestVariant(list []streamVariant, maxShortSide int) (streamVariant, bool) {
 	return best, found
 }
 
-// betterVariantFromPageJSON looks through the page's JSON responses for the
-// rendition list that contains playedURL. It returns the best rendition and the
-// played one when the best is strictly larger; otherwise ok is false.
+// betterVariantFromPageJSON looks through the page's JSON responses for every
+// rendition list that contains playedURL (several responses, or several lists
+// in one, e.g. per codec) and compares them all. It returns the best rendition
+// and the played one when the best is strictly larger; otherwise ok is false.
+// At equal size the newer response wins, then the smaller address, so the
+// choice does not depend on JSON key order.
 func betterVariantFromPageJSON(bodies [][]byte, playedURL string, maxShortSide int) (best, played streamVariant, ok bool) {
+	var cur streamVariant
+	haveCur := false
+	found := false
 	for i := len(bodies) - 1; i >= 0; i-- { // newest response first
 		var doc interface{}
 		if json.Unmarshal(bodies[i], &doc) != nil {
 			continue
 		}
+		var bodyBest streamVariant
+		bodyFound := false
 		for _, list := range variantListsContaining(doc, playedURL) {
-			var cur streamVariant
 			for _, v := range list {
-				if sameMediaURL(v.URL, playedURL) {
-					cur = v
-					break
+				if !haveCur && sameMediaURL(v.URL, playedURL) {
+					cur, haveCur = v, true
 				}
 			}
-			b, found := bestVariant(list, maxShortSide)
-			if found && b.pixels() > cur.pixels() {
-				return b, cur, true
+			b, ok := bestVariant(list, maxShortSide)
+			if ok && (!bodyFound || betterVariant(b, bodyBest) || !betterVariant(bodyBest, b) && b.URL < bodyBest.URL) {
+				bodyBest, bodyFound = b, true
 			}
-			return streamVariant{}, cur, false
+		}
+		if bodyFound && (!found || betterVariant(bodyBest, best)) {
+			best, found = bodyBest, true
 		}
 	}
-	return streamVariant{}, streamVariant{}, false
+	if found && best.pixels() > cur.pixels() {
+		return best, cur, true
+	}
+	return streamVariant{}, cur, false
+}
+
+// betterVariant reports whether a is larger than b, or the same size and
+// H.264 where b is not (the order bestVariant uses).
+func betterVariant(a, b streamVariant) bool {
+	if a.pixels() != b.pixels() {
+		return a.pixels() > b.pixels()
+	}
+	return a.isH264() && !b.isH264()
 }

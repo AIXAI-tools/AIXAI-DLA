@@ -61,7 +61,7 @@ func (n episodeNaming) join(name string, ep int) string {
 	if s := safeWindowsBaseName(n.Series); s != "" {
 		name = s
 	}
-	return safeWindowsBaseName(name + n.label(ep))
+	return withEpisodeLabel(name, n.label(ep))
 }
 
 // namingFor is the naming of a batch; only 連續集數 batches have one.
@@ -98,12 +98,14 @@ func (a *app) customSequenceTemplate(cfg settings, dir string) string {
 		return ""
 	}
 	label := strings.ReplaceAll(n.label(ep), "%", "%%")
-	if s := safeWindowsBaseName(n.Series); s != "" {
-		return strings.ReplaceAll(s, "%", "%%") + label + ".%(ext)s"
-	}
 	t := titleBudget(dir, len(label))
 	if t > 200 {
 		t = 200
+	}
+	if s := safeWindowsBaseName(n.Series); s != "" {
+		// The series name takes the room a title would (episode label kept).
+		s, _ = truncateUTF8(s, t+pathIDReserve)
+		return strings.ReplaceAll(strings.TrimRight(s, " ."), "%", "%%") + label + ".%(ext)s"
 	}
 	return fmt.Sprintf("%%(title).%dB", t) + label + ".%(ext)s"
 }

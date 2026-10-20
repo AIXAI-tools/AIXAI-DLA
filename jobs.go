@@ -65,6 +65,8 @@ type job struct {
 	// AutoResume marks a task paused only for a version update; the updated
 	// program resumes it (tasks the user paused are left paused).
 	AutoResume bool `json:"autoResume,omitempty"`
+	// SeqHashes are the files a 連續集數 task already checked (media_check.go).
+	SeqHashes map[string]seqRecord `json:"seqHashes,omitempty"`
 
 	notes  []string // shown once, when the task first starts
 	status string   // latest status line while running
@@ -171,10 +173,7 @@ func (a *app) saveJobsLocked() {
 	if err != nil {
 		return
 	}
-	tmp := a.jobsPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0644) == nil {
-		_ = os.Rename(tmp, a.jobsPath())
-	}
+	a.notePersistError("任務清單", writeFileAtomic(a.jobsPath(), data))
 }
 
 // loadJobs restores the tasks left unfinished last time, all paused, except
@@ -233,33 +232,46 @@ func (a *app) jobViews() []jobView {
 	a.jobsMu.Lock()
 	defer a.jobsMu.Unlock()
 	out := make([]jobView, 0, len(a.jobs))
-	for _, j := range a.jobs {
-		out = append(out, a.viewLocked(j))
+	// Worked out once for all cards, not once per card.
+	busy, running := a.busySitesLocked(), a.runningCountLocked()
+	for i, j := range a.jobs {
+		out = append(out, a.viewWith(j, i, busy, running))
 	}
 	return out
 }
 
 // viewLocked adds why a queued task is not running yet; jobsMu must be held.
 func (a *app) viewLocked(j *job) jobView {
-	v := j.view()
+	order := 0
 	for i, x := range a.jobs {
 		if x == j {
-			v.Order = i
+			order = i
 			break
 		}
 	}
+	var busy map[string]int
+	if j.State == jobQueued {
+		busy = a.busySitesLocked()
+	}
+	return a.viewWith(j, order, busy, a.runningCountLocked())
+}
+
+// viewWith is viewLocked with the card's place, the sites in use and the
+// number of running tasks already known.
+func (a *app) viewWith(j *job, order int, busy map[string]int, running int) jobView {
+	v := j.view()
+	v.Order = order
 	if j.State == jobRunning && j.stopAs == jobYield {
 		v.Status = "正在讓位給排在前面的任務，稍後從這一集接著下載…"
 	}
 	if j.State == jobQueued {
-		busy := a.busySitesLocked()
 		for _, s := range v.Sites {
 			if busy[s] != 0 {
 				v.Waiting = fmt.Sprintf("等待任務 %d 完成（同一網站不同時下載）", busy[s])
 				return v
 			}
 		}
-		if a.runningCountLocked() >= int(a.maxJobs.Load()) {
+		if running >= int(a.maxJobs.Load()) {
 			v.Waiting = "等待空位（同時執行上限）"
 		}
 	}
@@ -402,6 +414,21 @@ func pickRunnable(jobs []*job, limit int) []*job {
 	return out
 }
 
+// savedSeqFiles is the sequence comparison a run starts from: the files the
+// task checked in its earlier runs.
+func (a *app) savedSeqFiles() map[string]seqFile {
+	out := map[string]seqFile{}
+	if a.job == nil {
+		return out
+	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
+	for sum, r := range a.job.SeqHashes {
+		out[sum] = seqFile{item: r.Item, path: r.Path}
+	}
+	return out
+}
+
 // startJobLocked runs a task on its own *app; jobsMu must be held.
 func (a *app) startJobLocked(j *job) {
 	w := &app{appShared: a.appShared, job: j, cfg: j.Cfg, itemOffset: j.Pos}
@@ -436,6 +463,9 @@ func (a *app) startJobLocked(j *job) {
 			w.postLog(n)
 		}
 		w.logTaskHeader(urls, j.Mode, j.FormatID, j.Cfg)
+		if saveFolderTooLong(j.Output) {
+			w.postLog(fmt.Sprintf("⚠ 儲存位置的路徑很長（%d 個字元），下載的檔案完整路徑可能超過 Windows 的 260 字元上限，部分播放器會打不開。建議改選較短的資料夾。\r\n", pathUnits(j.Output)))
+		}
 		err := w.ensureEnvironment(ctx, false)
 		if err == nil {
 			err = w.runURLs(ctx, urls, j.Mode, j.FormatID, j.Output, j.Cfg)

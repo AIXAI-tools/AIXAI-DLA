@@ -110,11 +110,7 @@ func (a *app) saveReplyThreads(list []replyThread) {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(a.appDir, 0755)
-	tmp := a.replyPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0644) == nil {
-		_ = os.Rename(tmp, a.replyPath())
-	}
+	a.notePersistError("回報回覆紀錄", writeFileAtomic(a.replyPath(), data))
 }
 
 // pruneReplyThreads drops threads idle for replyKeepDays and keeps the newest.

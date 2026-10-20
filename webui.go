@@ -187,9 +187,11 @@ func (a *app) emitTask(index int, state, message string) {
 }
 
 func (a *app) saveSettings() {
-	data, _ := json.MarshalIndent(a.cfg, "", "  ")
-	_ = os.MkdirAll(a.appDir, 0755)
-	_ = os.WriteFile(a.configPath, data, 0644)
+	data, err := json.MarshalIndent(a.cfg, "", "  ")
+	if err != nil {
+		return
+	}
+	a.notePersistError("設定", writeFileAtomic(a.configPath, data))
 }
 
 // ---------------------------------------------------------------------------

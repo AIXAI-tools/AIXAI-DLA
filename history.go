@@ -84,10 +84,7 @@ func (a *app) saveHistoryLocked() {
 	if err != nil {
 		return
 	}
-	tmp := a.historyPath() + ".tmp"
-	if os.WriteFile(tmp, data, 0644) == nil {
-		_ = os.Rename(tmp, a.historyPath())
-	}
+	a.notePersistError("下載歷史", writeFileAtomic(a.historyPath(), data))
 }
 
 // recordHistory adds the outcome of a finished task item.
@@ -214,10 +211,20 @@ func historyCSV(list []historyEntry) []byte {
 		if e.Reason != "" {
 			brief = errorBrief(e.Reason)
 		}
-		_ = w.Write([]string{e.Time.Format("2006-01-02 15:04:05"), historyStateLabel(e.State), e.Title, e.URL, where, brief, e.Reason})
+		_ = w.Write([]string{e.Time.Format("2006-01-02 15:04:05"), historyStateLabel(e.State), csvText(e.Title), csvText(e.URL), csvText(where), csvText(brief), csvText(e.Reason)})
 	}
 	w.Flush()
 	return b.Bytes()
+}
+
+// csvText keeps a cell as text in Excel: a title from a web page that starts
+// with =, +, -, @ (or a tab / carriage return) would otherwise be read as a
+// formula. A leading apostrophe is what Excel itself uses for "text".
+func csvText(s string) string {
+	if s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0])) {
+		return "'" + s
+	}
+	return s
 }
 
 // urlLines is the TXT export: one address a line, duplicates removed.

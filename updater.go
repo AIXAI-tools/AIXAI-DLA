@@ -246,6 +246,12 @@ func (a *app) updateStep(stage string, pct int, msg string) {
 }
 
 func (a *app) installReleaseAsync(tag string) {
+	if !a.installing.CompareAndSwap(false, true) {
+		a.postLog("ℹ 已有一個版本正在安裝，這次的要求已略過。\r\n")
+		return
+	}
+	// Cleared on failure; after a successful swap the program restarts.
+	defer a.installing.Store(false)
 	fail := func(err error) {
 		a.updateStep("error", 0, err.Error())
 		a.postLog("⚠ 更新失敗：" + err.Error() + "\r\n")
