@@ -988,7 +988,29 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	if wantEp == 0 {
 		wantEp = episodeFromQuery(rawURL)
 	}
-	staticNoticed := false
+	staticNoticed, reloaded := false, false
+	// staticSources: the HTML addresses a stream came from (itself or the
+	// addresses that redirected to it).
+	staticSources := func(raw string) []string {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		var out []string
+		k := adURLKey(raw)
+		for _, s := range append([]string{k}, redirectFrom[k]...) {
+			if staticKeys[s] {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	// onlyStatic: the page has played nothing but its built-in video.
+	onlyStatic := func() bool {
+		if best.URL == "" || !isStatic(best.URL) {
+			return false
+		}
+		_, other := notStatic()
+		return !other
+	}
 	var settle *time.Timer
 	var settleC <-chan time.Time
 	for {
@@ -1005,6 +1027,33 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				go checkAdVideos()
 			}
 		case <-hint.C:
+			if !isTikTokDrama && !reloaded && (best.URL == "" || onlyStatic()) {
+				// Usually the site was just slow: reload the page once before
+				// calling the user.
+				reloaded = true
+				if best.URL == "" {
+					a.postLog("ℹ 25 秒內沒有偵測到影片，重新整理一次頁面。\r\n")
+				} else {
+					a.postLog(fmt.Sprintf("ℹ 網頁還沒載入第 %d 集的播放器，重新整理一次頁面。\r\n", wantEp))
+				}
+				_ = b.send("Page.navigate", map[string]interface{}{"url": rawURL})
+				hint.Reset(25 * time.Second)
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				deadline.Reset(40 * time.Second)
+				continue
+			}
+			if !isTikTokDrama && onlyStatic() {
+				if builtInVideoIsEpisode(ctx, rawURL, wantEp, staticSources(best.URL)) {
+					a.postLog(fmt.Sprintf("✓ 網頁內建的影片每一集都不同，就是第 %d 集的影片。\r\n", wantEp))
+					awaitSubtitles()
+					return finish(best), nil
+				}
+			}
 			if (best.URL == "" || isStatic(best.URL)) && !isTikTokDrama {
 				userWait = true
 				b.reveal(a.scale)
@@ -1014,7 +1063,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				// flashes and the system information sound plays.
 				a.flashMainWindow()
 				procMessageBeep.Call(mbIconAsterisk)
-				a.postLog("ℹ 25 秒內尚未偵測到正片串流，已把瀏覽器視窗叫到前面：若畫面正在播廣告、要求按播放、登入或驗證，請直接在該視窗操作（本工具不會自動點擊廣告）。程式最多再等 10 分鐘。\r\n")
+				a.postLog("ℹ 重新整理後仍未偵測到正片串流，已把瀏覽器視窗叫到前面：若畫面正在播廣告、要求按播放、登入或驗證，請直接在該視窗操作（本工具不會自動點擊廣告）。程式最多再等 10 分鐘。\r\n")
 				a.postStatus("狀態：等待正片開始播放（可在瀏覽器視窗操作，最多 10 分鐘）…")
 				if !deadline.Stop() {
 					select {
@@ -1099,7 +1148,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 					} else {
 						if !staticNoticed {
 							staticNoticed = true
-							a.postLog(fmt.Sprintf("ℹ 網頁先播放了頁面內建的影片（每一集都相同，不是第 %d 集），繼續等待播放器載入本集。\r\n", wantEp))
+							a.postLog(fmt.Sprintf("ℹ 網頁先播放了頁面內建的影片（常是每一集都相同的預覽），先等待播放器載入第 %d 集。\r\n", wantEp))
 						}
 						continue
 					}
@@ -1120,6 +1169,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		case <-deadline.C:
 			if best.URL != "" && isStatic(best.URL) {
 				c, ok := notStatic()
+				if !ok && builtInVideoIsEpisode(ctx, rawURL, wantEp, staticSources(best.URL)) {
+					a.postLog(fmt.Sprintf("✓ 網頁內建的影片每一集都不同，就是第 %d 集的影片。\r\n", wantEp))
+					c, ok = best, true
+				}
 				if !ok {
 					return browserMediaCandidate{}, fmt.Errorf("網頁沒有載入第 %d 集的影片，只播放了頁面內建的影片（每一集都相同），為避免存成錯的集數，沒有下載", wantEp)
 				}

@@ -2,7 +2,13 @@
 
 package main
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestCaptureSubtitlesUsesListOfLoadedFile(t *testing.T) {
 	other := []byte(`{"data":[{"url":"https://cdn.example/sub/ep9-en.vtt","language_code":"en"}]}`)
@@ -73,5 +79,45 @@ func TestEpisodeNumberFromQuery(t *testing.T) {
 		if got := episodeNumberFromQuery(raw); got != want {
 			t.Errorf("%s = %d, want %d", raw, got, want)
 		}
+	}
+}
+
+func TestWithEpisodeQuery(t *testing.T) {
+	if got := withEpisodeQuery("https://site.example/watch?ep=9&lang=en", 8); got != "https://site.example/watch?ep=8&lang=en" {
+		t.Errorf("got %s", got)
+	}
+	if got := withEpisodeQuery("https://site.example/watch", 8); got != "" {
+		t.Errorf("no episode parameter: got %s", got)
+	}
+}
+
+func TestBuiltInVideoIsEpisode(t *testing.T) {
+	// /shared?ep=N names the same video on every episode; /own?ep=N names
+	// each episode's own video; /broken fails.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ep := r.URL.Query().Get("ep")
+		switch r.URL.Path {
+		case "/shared":
+			fmt.Fprint(w, `<video preload="none"><source src="/stream/series.mp4" type="video/mp4"></video>`)
+		case "/own":
+			fmt.Fprintf(w, `<video preload="none" src="/media/ep%s.mp4"></video>`, ep)
+		default:
+			http.Error(w, "no", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	key := func(p string) []string { return []string{adURLKey(srv.URL + p)} }
+	if builtInVideoIsEpisode(ctx, srv.URL+"/shared?ep=3", 3, key("/stream/series.mp4")) {
+		t.Error("shared video taken for the episode")
+	}
+	if !builtInVideoIsEpisode(ctx, srv.URL+"/own?ep=3", 3, key("/media/ep3.mp4")) {
+		t.Error("the episode's own video refused")
+	}
+	if !builtInVideoIsEpisode(ctx, srv.URL+"/own?ep=1", 1, key("/media/ep1.mp4")) {
+		t.Error("episode 1 compares with episode 2")
+	}
+	if builtInVideoIsEpisode(ctx, srv.URL+"/broken?ep=3", 3, key("/media/ep3.mp4")) {
+		t.Error("unreadable other page must count as not this episode")
 	}
 }

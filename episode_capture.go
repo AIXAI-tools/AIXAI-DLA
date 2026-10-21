@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Episode pages that keep one address for every episode select the episode
@@ -224,4 +227,81 @@ func (a *app) savedEpisodeBatch() *episodeBatch {
 func isEpisodeRepeated(err error) bool {
 	var rep *errEpisodeRepeated
 	return errors.As(err, &rep)
+}
+
+// withEpisodeQuery returns raw with its episode query parameter set to n, or
+// "" when the address carries none.
+func withEpisodeQuery(raw string, n int) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	q := u.Query()
+	for _, key := range episodeQueryKeys {
+		if allDigits(q.Get(key)) {
+			q.Set(key, strconv.Itoa(n))
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+	}
+	return ""
+}
+
+// pageVideoKeys returns the media addresses written in a page's HTML (as
+// adURLKey keys), read without a browser.
+func pageVideoKeys(ctx context.Context, raw string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %s", resp.Status)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]bool{}
+	for _, c := range extractWebMediaCandidates(string(b), raw) {
+		keys[adURLKey(c.URL)] = true
+	}
+	return keys, nil
+}
+
+// builtInVideoIsEpisode decides whether the video written into the page's
+// HTML (sources: its addresses there) belongs to episode ep. Pages that share
+// one address for every episode usually write the same video into every
+// episode's HTML; a server that writes each episode's own video gives another
+// episode's page a different one. Unknown (the other page cannot be read)
+// counts as "not this episode", so a wrong episode is never saved.
+func builtInVideoIsEpisode(ctx context.Context, pageURL string, ep int, sources []string) bool {
+	if ep <= 0 || len(sources) == 0 {
+		return false
+	}
+	other := withEpisodeQuery(pageURL, ep+1)
+	if ep > 1 {
+		other = withEpisodeQuery(pageURL, ep-1)
+	}
+	if other == "" {
+		return false
+	}
+	keys, err := pageVideoKeys(ctx, other)
+	if err != nil || len(keys) == 0 {
+		return false
+	}
+	for _, s := range sources {
+		if keys[s] {
+			return false
+		}
+	}
+	return true
 }
