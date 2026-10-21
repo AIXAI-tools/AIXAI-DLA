@@ -32,11 +32,22 @@ var episodeQueryKeys = []string{"ep", "episode", "episode_id"}
 
 // episodeFromQuery returns the episode number carried in the query, or 0.
 func episodeFromQuery(raw string) int {
+	return episodeFromQueryKeys(raw, episodeQueryKeys)
+}
+
+// episodeNumberFromQuery is episodeFromQuery without "episode_id", which on
+// many sites is an id rather than the episode's number: it decides whether a
+// single address (not a numbered sequence) is a shared-address episode page.
+func episodeNumberFromQuery(raw string) int {
+	return episodeFromQueryKeys(raw, []string{"ep", "episode"})
+}
+
+func episodeFromQueryKeys(raw string, keys []string) int {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return 0
 	}
-	for _, key := range episodeQueryKeys {
+	for _, key := range keys {
 		if v := u.Query().Get(key); allDigits(v) {
 			n, _ := strconv.Atoi(v)
 			return n

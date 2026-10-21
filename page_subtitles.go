@@ -313,6 +313,10 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 // the segments of a streamed subtitle track, not separate files.
 const maxCaptureSubtitleFiles = 6
 
+// subtitleLoadWait: how long a capture waits for the player to load a
+// subtitle file the page lists, after the video stream was chosen.
+const subtitleLoadWait = 5 * time.Second
+
 // isSubtitleResponse reports whether a response is a subtitle file, by the
 // URL's extension or its WebVTT type.
 func isSubtitleResponse(raw, mimeType string) bool {

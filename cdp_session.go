@@ -264,6 +264,8 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--autoplay-policy=no-user-gesture-required",
+		// The capture plays videos in the background: keep them silent.
+		"--mute-audio",
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
@@ -597,7 +599,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	// chosen afterwards. They are never written to disk or to the log.
 	var pageJSON [][]byte
 	var pageJSONMu sync.Mutex
+	// pageJSONReads counts the response bodies still being read.
+	var pageJSONReads sync.WaitGroup
 	keepPageJSON := func(requestID string) {
+		defer pageJSONReads.Done()
 		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
 		if err != nil || reply.Result == nil {
 			return
@@ -674,6 +679,66 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	// Subtitle files the player loaded during this capture.
 	var subFiles []string
 	subSeen := map[string]bool{}
+	// On a page whose episodes share one address (episode_capture.go), a video
+	// written into the page's HTML -- a fallback player for visitors without
+	// scripts, or the address declared for search engines -- is the same for
+	// every episode, so it is never taken for the requested one. Redirects are
+	// followed: such an address often forwards to the media server.
+	sharedAddress := a.episodeGuard != nil
+	staticKeys := map[string]bool{}
+	redirectFrom := map[string][]string{}
+	docRead := false
+	readStaticHTML := func(requestID, docURL string) {
+		defer pageJSONReads.Done()
+		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
+		if err != nil || reply.Result == nil {
+			return
+		}
+		body := cdpString(reply.Result, "body")
+		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
+			raw, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return
+			}
+			body = string(raw)
+		}
+		cands := extractWebMediaCandidates(body, docURL)
+		stateMu.Lock()
+		for _, c := range cands {
+			staticKeys[adURLKey(c.URL)] = true
+		}
+		stateMu.Unlock()
+	}
+	isStatic := func(raw string) bool {
+		if !sharedAddress {
+			return false
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		k := adURLKey(raw)
+		if staticKeys[k] {
+			return true
+		}
+		for _, src := range redirectFrom[k] {
+			if staticKeys[src] {
+				return true
+			}
+		}
+		return false
+	}
+	// waitReads lets the response bodies still being read arrive.
+	waitReads := func(limit time.Duration) {
+		read := make(chan struct{})
+		go func() {
+			pageJSONReads.Wait()
+			close(read)
+		}()
+		select {
+		case <-read:
+		case <-time.After(limit):
+		case <-ctx.Done():
+		}
+	}
 	withPageJSON := func(c browserMediaCandidate) browserMediaCandidate {
 		pageJSONMu.Lock()
 		c.PageJSON = append([][]byte(nil), pageJSON...)
@@ -683,6 +748,42 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		stateMu.Unlock()
 		c.Subtitles = captureSubtitles(c.PageJSON, loaded, rawURL)
 		return c
+	}
+	// awaitSubtitles runs once the stream is chosen. It lets the JSON responses
+	// still being read arrive, then, while the page lists subtitles but the
+	// player has not loaded any yet (some load the track only after the video
+	// starts), waits a little for it: the loaded file tells which list is this
+	// episode's.
+	awaitSubtitles := func() {
+		waitReads(2 * time.Second)
+		end := time.Now().Add(subtitleLoadWait)
+		for time.Now().Before(end) {
+			stateMu.Lock()
+			loaded := len(subFiles) > 0
+			stateMu.Unlock()
+			if loaded {
+				return
+			}
+			listed := false
+			pageJSONMu.Lock()
+			for _, body := range pageJSON {
+				if len(jsonSubtitleList(body, rawURL)) > 0 {
+					listed = true
+					break
+				}
+			}
+			pageJSONMu.Unlock()
+			if !listed {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-b.readerDone:
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
 	}
 	handler := func(msg cdpWireMessage) {
 		p := msg.Params
@@ -700,7 +801,15 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				st = &cdpRequestState{}
 				states[reqID] = st
 			}
-			st.URL = cdpString(req, "url")
+			newURL := cdpString(req, "url")
+			if _, redirected := p["redirectResponse"]; redirected && st.URL != "" {
+				// The same request continues at another address.
+				from, to := adURLKey(st.URL), adURLKey(newURL)
+				if from != to && len(redirectFrom[to]) < 16 {
+					redirectFrom[to] = append(redirectFrom[to], append([]string{from}, redirectFrom[from]...)...)
+				}
+			}
+			st.URL = newURL
 			st.RequestType = cdpString(p, "type")
 			st.Initiator = cdpString(initiator, "url")
 			st.RequestHeaders = mergeStringMaps(st.RequestHeaders, cdpMapString(req["headers"]))
@@ -758,8 +867,19 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				vast := st != nil && st.Status == 200 && (st.RequestType == "XHR" || st.RequestType == "Fetch") &&
 					(strings.Contains(strings.ToLower(st.MimeType), "xml") || strings.Contains(strings.ToLower(st.URL), "vast")) &&
 					cdpFloat(p, "encodedDataLength") <= maxPageJSONBytes
+				// The first document is the page itself (frames come later).
+				doc := sharedAddress && !docRead && st != nil && st.Status == 200 && st.RequestType == "Document"
+				var docURL string
+				if doc {
+					docRead, docURL = true, st.URL
+				}
 				stateMu.Unlock()
+				if doc {
+					pageJSONReads.Add(1)
+					go readStaticHTML(reqID, docURL)
+				}
 				if keep {
+					pageJSONReads.Add(1)
 					go keepPageJSON(reqID)
 				}
 				if vast {
@@ -848,11 +968,27 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	seenKeys := map[string]bool{}
 	finish := func(c browserMediaCandidate) browserMediaCandidate {
 		c = withPageJSON(c)
-		c.Alternates = captureAlternates(seen, c.URL, isAd)
+		c.Alternates = captureAlternates(seen, c.URL, func(u string) bool { return isAd(u) || isStatic(u) })
 		// Read now: the tab goes back to a blank page when the capture ends.
 		c.PageTitle = b.pageTitle()
 		return c
 	}
+	// notStatic returns the best stream seen that is not the page's own
+	// fallback video (see isStatic).
+	notStatic := func() (browserMediaCandidate, bool) {
+		var out browserMediaCandidate
+		for _, c := range seen {
+			if !isAd(c.URL) && !isStatic(c.URL) && betterCaptureCandidate(c, out) {
+				out = c
+			}
+		}
+		return out, out.URL != ""
+	}
+	wantEp := pageEpisode
+	if wantEp == 0 {
+		wantEp = episodeFromQuery(rawURL)
+	}
+	staticNoticed := false
 	var settle *time.Timer
 	var settleC <-chan time.Time
 	for {
@@ -869,7 +1005,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				go checkAdVideos()
 			}
 		case <-hint.C:
-			if best.URL == "" && !isTikTokDrama {
+			if (best.URL == "" || isStatic(best.URL)) && !isTikTokDrama {
 				userWait = true
 				b.reveal(a.scale)
 				a.loginBrowser.Store(b)
@@ -919,7 +1055,9 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				seenKeys[key] = true
 				seen = append(seen, c)
 			}
-			if betterCaptureCandidate(c, best) {
+			// The page's own fallback video ranks below any other stream.
+			if better := betterCaptureCandidate(c, best); (better && (!isStatic(c.URL) || best.URL == "" || isStatic(best.URL))) ||
+				(best.URL != "" && isStatic(best.URL) && !isStatic(c.URL)) {
 				best = c
 				if best.Score >= 125 {
 					wait := 3500 * time.Millisecond
@@ -953,6 +1091,20 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 					continue
 				}
 			}
+			if best.URL != "" && sharedAddress {
+				waitReads(2 * time.Second)
+				if isStatic(best.URL) {
+					if c, ok := notStatic(); ok {
+						best = c
+					} else {
+						if !staticNoticed {
+							staticNoticed = true
+							a.postLog(fmt.Sprintf("ℹ 網頁先播放了頁面內建的影片（每一集都相同，不是第 %d 集），繼續等待播放器載入本集。\r\n", wantEp))
+						}
+						continue
+					}
+				}
+			}
 			if best.URL != "" {
 				a.postLog(fmt.Sprintf("✓ DevTools 捕捉到 %s 媒體（%s）。\r\n", best.Kind, hostOnly(best.URL)))
 				if pageEpisode > 0 && best.EpisodeMatch {
@@ -962,10 +1114,19 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				} else if pageEpisode > 0 && (streamHasNumberSegment(best.URL) || hasListed) {
 					a.postLog(fmt.Sprintf("⚠ 沒有找到確定屬於第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}
+				awaitSubtitles()
 				return finish(best), nil
 			}
 		case <-deadline.C:
+			if best.URL != "" && isStatic(best.URL) {
+				c, ok := notStatic()
+				if !ok {
+					return browserMediaCandidate{}, fmt.Errorf("網頁沒有載入第 %d 集的影片，只播放了頁面內建的影片（每一集都相同），為避免存成錯的集數，沒有下載", wantEp)
+				}
+				best = c
+			}
 			if best.URL != "" && !isAd(best.URL) {
+				awaitSubtitles()
 				return finish(best), nil
 			}
 			if isTikTokDrama {

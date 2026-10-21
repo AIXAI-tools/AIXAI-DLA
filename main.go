@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.8"
+	appVersion = "4.2.9"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1153,7 +1153,9 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// Episodes chosen by a query parameter on a page that keeps one address
 		// for every episode: only the capture browser loads the right one
 		// (see episode_capture.go).
-		episodeByQuery := cfg.Sequence && site == "" && episodeFromQuery(rawURL) > 0
+		// A single address with ?ep=N is such a page too: the page's HTML
+		// names one video for every episode, which yt-dlp would take.
+		episodeByQuery := site == "" && (cfg.Sequence && episodeFromQuery(rawURL) > 0 || episodeNumberFromQuery(rawURL) > 0)
 		if (site == "tiktok" && func() bool { _, _, ok := parseTikTokShortDramaURL(rawURL); return ok }()) || site == "dramatip" || episodeByQuery {
 			var err error
 			if episodeByQuery {

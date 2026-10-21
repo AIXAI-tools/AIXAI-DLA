@@ -62,3 +62,16 @@ func TestIsSubtitleResponse(t *testing.T) {
 		t.Error("text/vtt type")
 	}
 }
+
+func TestEpisodeNumberFromQuery(t *testing.T) {
+	for raw, want := range map[string]int{
+		"https://site.example/film/x/watch?ep=9":        9,
+		"https://site.example/play?episode=3&lang=en":   3,
+		"https://site.example/play?episode_id=31284554": 0,
+		"https://site.example/watch?v=abc":              0,
+	} {
+		if got := episodeNumberFromQuery(raw); got != want {
+			t.Errorf("%s = %d, want %d", raw, got, want)
+		}
+	}
+}
