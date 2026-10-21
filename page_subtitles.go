@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -85,7 +86,7 @@ func subtitleFromJSON(m map[string]any, baseURL string) (pageSubtitle, bool) {
 	if src == "" {
 		return pageSubtitle{}, false
 	}
-	s := pageSubtitle{URL: src, Label: str("label", "name"), Lang: str("lang", "srclang", "language")}
+	s := pageSubtitle{URL: src, Label: str("label", "name", "language_name"), Lang: str("lang", "srclang", "language", "language_code")}
 	for _, k := range []string{"isDefault", "default"} {
 		if b, ok := m[k].(bool); ok && b {
 			s.Default = true
@@ -245,6 +246,15 @@ func fetchSubtitle(ctx context.Context, raw, pageURL string, cfg settings) (stri
 // the conversion fails the .vtt is kept. A subtitle that cannot be fetched
 // only logs a warning: the video itself is done.
 func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep int, videos []string, cfg settings) {
+	a.saveSubtitles(ctx, pageEpisodeSubtitles(body, pageURL, ep), pageURL, videos, cfg)
+}
+
+// saveSubtitles fetches subs and saves them next to each video file in videos
+// (audio files are skipped).
+func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL string, videos []string, cfg settings) {
+	if len(subs) == 0 {
+		return
+	}
 	var targets []string
 	for _, v := range videos {
 		ext := strings.ToLower(filepath.Ext(v))
@@ -253,10 +263,6 @@ func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep in
 		}
 	}
 	if len(targets) == 0 {
-		return
-	}
-	subs := pageEpisodeSubtitles(body, pageURL, ep)
-	if len(subs) == 0 {
 		return
 	}
 	names := subtitleNames("", subs)
@@ -296,4 +302,107 @@ func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep in
 	if saved > 0 {
 		a.diagNote(fmt.Sprintf("外掛字幕 ✓ %d 個", saved))
 	}
+}
+
+// Pages that build their player with scripts (the browser-capture path) do
+// not show their subtitles in the HTML: the player asks the site for the
+// episode's subtitle list (JSON) and then loads the file it shows. The capture
+// browser sees both.
+
+// maxCaptureSubtitleFiles: more subtitle files than this in one capture are
+// the segments of a streamed subtitle track, not separate files.
+const maxCaptureSubtitleFiles = 6
+
+// isSubtitleResponse reports whether a response is a subtitle file, by the
+// URL's extension or its WebVTT type.
+func isSubtitleResponse(raw, mimeType string) bool {
+	if u, err := url.Parse(raw); err == nil && subtitleExts[strings.ToLower(filepath.Ext(u.Path))] {
+		return true
+	}
+	return strings.Contains(strings.ToLower(mimeType), "text/vtt")
+}
+
+// jsonSubtitleList returns the subtitle files a JSON response lists: objects
+// whose src/url/file names a subtitle file.
+func jsonSubtitleList(body []byte, baseURL string) []pageSubtitle {
+	var root any
+	if json.Unmarshal(body, &root) != nil {
+		return nil
+	}
+	var out []pageSubtitle
+	seen := map[string]bool{}
+	var walk func(v any, depth int)
+	walk = func(v any, depth int) {
+		if depth > 8 || len(out) > 32 {
+			return
+		}
+		switch t := v.(type) {
+		case map[string]any:
+			if s, ok := subtitleFromJSON(t, baseURL); ok && isSubtitleResponse(s.URL, "") {
+				if !seen[s.URL] {
+					seen[s.URL] = true
+					out = append(out, s)
+				}
+				return
+			}
+			keys := make([]string, 0, len(t))
+			for k := range t {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				walk(t[k], depth+1)
+			}
+		case []any:
+			for _, c := range t {
+				walk(c, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+	return out
+}
+
+// captureSubtitles picks the subtitles of the captured episode: the JSON list
+// that holds a file the player loaded (every language of this episode), else
+// the loaded files themselves, else the page's only subtitle list. The file
+// the player showed becomes the main one (named like the video).
+func captureSubtitles(pageJSON [][]byte, loaded []string, baseURL string) []pageSubtitle {
+	if len(loaded) > maxCaptureSubtitleFiles {
+		loaded = nil
+	}
+	loadedKey := map[string]bool{}
+	for _, u := range loaded {
+		loadedKey[adURLKey(u)] = true
+	}
+	var lists [][]pageSubtitle
+	for _, body := range pageJSON {
+		// A longer list is more likely every episode's subtitles than this one's.
+		if l := jsonSubtitleList(body, baseURL); len(l) > 0 && len(l) <= 12 {
+			lists = append(lists, l)
+		}
+	}
+	for _, l := range lists {
+		for _, s := range l {
+			if !loadedKey[adURLKey(s.URL)] {
+				continue
+			}
+			out := append([]pageSubtitle(nil), l...)
+			for i := range out {
+				out[i].Default = loadedKey[adURLKey(out[i].URL)]
+			}
+			return out
+		}
+	}
+	if len(loaded) > 0 {
+		var out []pageSubtitle
+		for i, u := range loaded {
+			out = append(out, pageSubtitle{URL: u, Default: i == 0})
+		}
+		return out
+	}
+	if len(lists) == 1 {
+		return lists[0]
+	}
+	return nil
 }

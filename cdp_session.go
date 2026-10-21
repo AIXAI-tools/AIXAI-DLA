@@ -671,10 +671,17 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		_ = json.Unmarshal([]byte(cdpString(res, "value")), &urls)
 		noteAds(urls)
 	}
+	// Subtitle files the player loaded during this capture.
+	var subFiles []string
+	subSeen := map[string]bool{}
 	withPageJSON := func(c browserMediaCandidate) browserMediaCandidate {
 		pageJSONMu.Lock()
 		c.PageJSON = append([][]byte(nil), pageJSON...)
 		pageJSONMu.Unlock()
+		stateMu.Lock()
+		loaded := append([]string(nil), subFiles...)
+		stateMu.Unlock()
+		c.Subtitles = captureSubtitles(c.PageJSON, loaded, rawURL)
 		return c
 	}
 	handler := func(msg cdpWireMessage) {
@@ -726,6 +733,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			st.Status = int(cdpFloat(resp, "status"))
 			st.ResponseHeaders = mergeStringMaps(st.ResponseHeaders, cdpMapString(resp["headers"]))
 			st.SeenResponse = true
+			if st.Status > 0 && st.Status < 400 && isSubtitleResponse(st.URL, st.MimeType) && !subSeen[st.URL] && len(subFiles) <= maxCaptureSubtitleFiles {
+				subSeen[st.URL] = true
+				subFiles = append(subFiles, st.URL)
+			}
 			stateMu.Unlock()
 			emitFor(reqID)
 		case "Network.responseReceivedExtraInfo":

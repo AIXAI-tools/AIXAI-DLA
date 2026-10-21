@@ -59,6 +59,9 @@ type browserMediaCandidate struct {
 	// Alternates are the other streams seen during the same capture, best
 	// first; they are tried when the chosen one fails the media check.
 	Alternates []browserMediaCandidate
+	// Subtitles are the subtitle files the page offered for this video
+	// (page_subtitles.go); they are saved next to the downloaded file.
+	Subtitles []pageSubtitle
 }
 
 // maxCaptureAlternates limits how many other captured streams are tried.
@@ -596,11 +599,16 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 		a.diagNote("其他串流：" + describeCaptureCandidate(alt))
 	}
 	pageTitle := candidate.PageTitle
+	subs := candidate.Subtitles
+	if len(subs) > 0 {
+		a.diagNote(fmt.Sprintf("頁面字幕：%d 個", len(subs)))
+	}
 	candidate = a.upgradeToBestVariant(candidate, mode)
 	// download fetches one captured stream and checks the file.
 	download := func(c browserMediaCandidate) error {
 		c.PageTitle = pageTitle
 		a.resetOutputs()
+		a.lastCaptureFile = ""
 		err := a.downloadBrowserCapturedMedia(ctx, rawURL, c, mode, formatID, output, cfg)
 		if err == nil && !a.stopRequested.Load() {
 			err = a.finishStep(ctx, mode, cfg, true)
@@ -609,6 +617,9 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 			if err = a.checkSavedEpisode(a.episodeGuard, a.lastCaptureFile); err != nil {
 				a.lastCaptureFile = ""
 			}
+		}
+		if err == nil && !a.stopRequested.Load() && a.lastCaptureFile != "" {
+			a.saveSubtitles(ctx, subs, rawURL, []string{a.lastCaptureFile}, cfg)
 		}
 		return err
 	}
