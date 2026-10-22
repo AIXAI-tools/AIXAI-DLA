@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.11"
+	appVersion = "4.2.12"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1437,10 +1437,10 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			// A result of yt-dlp's generic extractor is a guess from the page
 			// and is checked strictly; a site's own extractor is trusted more.
 			strict := site == "" && a.lastYtGeneric
-			stepFiles := len(a.itemFiles)
+			stepFiles, ytArgs := len(a.itemFiles), a.lastYtArgs // FFmpeg runs in finishStep clear lastYtArgs
 			err = a.finishStep(ctx, mode, cfg, strict)
 			if err == nil && !a.stopRequested.Load() {
-				a.renameIDOnlyFiles(ctx, rawURL, stepFiles) // title_fallback.go
+				a.renameIDOnlyFiles(ctx, rawURL, ytArgs, stepFiles) // title_fallback.go
 			}
 			if err != nil && isMediaCheckFailure(err) && site == "" && mode != 3 && mode != 4 && !a.stopRequested.Load() {
 				a.diagFail(err)

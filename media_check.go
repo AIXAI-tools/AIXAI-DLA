@@ -391,6 +391,7 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 	var failure *mediaCheckError
 	for _, f := range files {
 		p := policyFor(f, mode, cfg, strict)
+		a.unwrapDisguisedSegments(ctx, f) // disguised_segments.go
 		info, err := a.probeMedia(ctx, f)
 		if errors.Is(err, errProbeUnavailable) {
 			a.postLog("ℹ 無法執行 ffprobe，略過檔案檢查：" + filepath.Base(f) + "\r\n")

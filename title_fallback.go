@@ -70,7 +70,7 @@ func titleFromPage(body string) string {
 // renameIDOnlyFiles renames this step's files that are named after the video
 // id to the page's title. Nothing happens when the page shows no title or
 // the new name is taken; the download itself is never affected.
-func (a *app) renameIDOnlyFiles(ctx context.Context, rawURL string, from int) {
+func (a *app) renameIDOnlyFiles(ctx context.Context, rawURL string, args []string, from int) {
 	if from < 0 || from >= len(a.itemFiles) || a.seqHashes != nil {
 		return
 	}
@@ -84,7 +84,6 @@ func (a *app) renameIDOnlyFiles(ctx context.Context, rawURL string, from int) {
 			targets = append(targets, target{i, id})
 		}
 	}
-	args := a.lastYtArgs
 	if len(targets) == 0 || len(args) == 0 || args[len(args)-1] != rawURL {
 		return
 	}
