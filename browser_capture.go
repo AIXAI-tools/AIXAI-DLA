@@ -494,6 +494,14 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	}
 	a.postLog(fmt.Sprintf("✓ 瀏覽器偵測到 %s 媒體串流（%s），正在交由 yt-dlp 下載。\r\n", candidate.Kind, hostOnly(candidate.URL)))
 	a.postStatus("狀態：已捕捉實際媒體串流，正在下載…")
+	// A large plain file is fetched over several connections when the server
+	// allows it (parallel_download.go); otherwise yt-dlp fetches it as before.
+	if handled, perr := a.tryParallelCapture(ctx, rawURL, candidate, mode, output); handled {
+		if perr == nil {
+			a.lastCaptureStreams = []string{candidate.URL, candidate.PlayedURL}
+		}
+		return perr
+	}
 	err = a.runCommand(ctx, args)
 	if err != nil && isAntiBotChallenge(err) && !a.stopRequested.Load() && ctx.Err() == nil {
 		// The media server sits behind the same anti-bot check as the page.

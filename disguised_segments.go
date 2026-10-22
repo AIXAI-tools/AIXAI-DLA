@@ -26,10 +26,8 @@ var (
 )
 
 const (
-	tsPacketSize        = 188
-	disguiseMaxHeader   = 4096 // a disguise picture is tiny; real images are not looked for
-	unwrapTempTSSuffix  = ".unwrap-ts.ts"
-	unwrapTempMP4Suffix = ".unwrap-ts.mp4"
+	tsPacketSize      = 188
+	disguiseMaxHeader = 4096 // a disguise picture is tiny; real images are not looked for
 )
 
 // disguiseHeaderAt returns the length of a disguise picture starting at
@@ -75,16 +73,18 @@ func isDisguisedTS(path string) bool {
 
 // stripDisguiseHeaders copies r to w without the disguise pictures and
 // returns how many it dropped.
-func stripDisguiseHeaders(r io.Reader, w io.Writer) (int, error) {
+func stripDisguiseHeaders(ctx context.Context, r io.Reader, w io.Writer) (int, error) {
 	const chunk = 4 << 20
-	br := bufio.NewReaderSize(r, chunk)
 	buf := make([]byte, 0, 2*chunk)
+	tmp := make([]byte, chunk)
 	dropped := 0
 	eof := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return dropped, err
+		}
 		if !eof {
-			tmp := make([]byte, chunk)
-			n, err := io.ReadFull(br, tmp)
+			n, err := io.ReadFull(r, tmp)
 			buf = append(buf, tmp[:n]...)
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				eof = true
@@ -145,20 +145,23 @@ func (a *app) unwrapDisguisedSegments(ctx context.Context, path string) bool {
 	a.postLog("→ 下載的影片片段前面都附有一小張圖片（網站的包裝方式），正在去掉並還原成 MP4（不重新編碼）…\r\n")
 	a.postStatus("狀態：正在還原影片片段…")
 	base := strings.TrimSuffix(path, filepath.Ext(path))
-	tsPath, mp4Path := base+unwrapTempTSSuffix, base+unwrapTempMP4Suffix
+	out, err := os.CreateTemp(filepath.Dir(path), filepath.Base(base)+".unwrap-*.ts")
+	if err != nil {
+		a.postLog("⚠ 無法建立還原影片的暫存檔：" + firstLine(err.Error()) + "\r\n")
+		return false
+	}
+	tsPath := out.Name()
+	mp4Path := tsPath + ".mp4"
 	defer os.Remove(tsPath) // our own temp files
-	err := func() error {
+	err = func() error {
+		defer out.Close()
 		in, err := os.Open(path)
 		if err != nil {
 			return err
 		}
 		defer in.Close()
-		out, err := os.Create(tsPath)
-		if err != nil {
-			return err
-		}
 		bw := bufio.NewWriterSize(out, 4<<20)
-		n, err := stripDisguiseHeaders(in, bw)
+		n, err := stripDisguiseHeaders(ctx, in, bw)
 		if err == nil {
 			err = bw.Flush()
 		}

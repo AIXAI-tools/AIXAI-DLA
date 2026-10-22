@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -137,14 +136,11 @@ func (a *app) readPageWithYtDlp(ctx context.Context, downloadArgs []string) stri
 		return ""
 	}
 	dumps, _ := filepath.Glob(filepath.Join(dir, "*.dump"))
-	type page struct {
-		size int64
-		body string
-	}
-	var pages []page
+	var largestBody string
+	var largestSize int64 = -1
 	for _, d := range dumps {
 		st, err := os.Stat(d)
-		if err != nil || st.Size() > 8<<20 {
+		if err != nil || st.Size() > 8<<20 || st.Size() <= largestSize {
 			continue
 		}
 		b, err := os.ReadFile(d)
@@ -152,12 +148,8 @@ func (a *app) readPageWithYtDlp(ctx context.Context, downloadArgs []string) stri
 			continue
 		}
 		if s := string(b); pageTitleRE.MatchString(s) || pageH1RE.MatchString(s) {
-			pages = append(pages, page{st.Size(), s})
+			largestSize, largestBody = st.Size(), s
 		}
 	}
-	if len(pages) == 0 {
-		return ""
-	}
-	sort.Slice(pages, func(i, j int) bool { return pages[i].size > pages[j].size })
-	return pages[0].body
+	return largestBody
 }

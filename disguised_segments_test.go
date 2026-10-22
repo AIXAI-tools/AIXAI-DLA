@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +48,7 @@ func TestStripDisguiseHeaders(t *testing.T) {
 		t.Fatal("test data: no picture near the end of the first read block")
 	}
 	var out bytes.Buffer
-	n, err := stripDisguiseHeaders(bytes.NewReader(in), &out)
+	n, err := stripDisguiseHeaders(context.Background(), bytes.NewReader(in), &out)
 	if err != nil || n != len(sizes) {
 		t.Fatalf("dropped %d, err %v; want %d", n, err, len(sizes))
 	}
@@ -60,9 +62,41 @@ func TestStripKeepsRealPNGInStream(t *testing.T) {
 	in := append(tsSegment(2, 1), fakePNG()...)
 	in = append(in, []byte("not ts at all, just bytes........")...)
 	var out bytes.Buffer
-	n, err := stripDisguiseHeaders(bytes.NewReader(in), &out)
+	n, err := stripDisguiseHeaders(context.Background(), bytes.NewReader(in), &out)
 	if err != nil || n != 0 || !bytes.Equal(out.Bytes(), in) {
 		t.Fatalf("dropped %d, err %v, same %v", n, err, bytes.Equal(out.Bytes(), in))
+	}
+}
+
+func TestStripDisguiseHeadersCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	n, err := stripDisguiseHeaders(ctx, bytes.NewReader(append(fakePNG(), tsSegment(3, 1)...)), &out)
+	if !errors.Is(err, context.Canceled) || n != 0 || out.Len() != 0 {
+		t.Fatalf("cancelled: dropped %d, wrote %d, err %v", n, out.Len(), err)
+	}
+}
+
+type cancelStripWriter struct {
+	bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *cancelStripWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	w.cancel()
+	return n, err
+}
+
+func TestStripDisguiseHeadersStopsBetweenBlocks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := bytes.Repeat([]byte{0x47}, 8<<20)
+	out := &cancelStripWriter{cancel: cancel}
+	_, err := stripDisguiseHeaders(ctx, bytes.NewReader(in), out)
+	if !errors.Is(err, context.Canceled) || out.Len() != 4<<20 {
+		t.Fatalf("wrote %d bytes after cancellation, err %v", out.Len(), err)
 	}
 }
 
