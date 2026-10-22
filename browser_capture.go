@@ -245,6 +245,11 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 	if isAdMediaURL(raw) {
 		return browserMediaCandidate{}, false
 	}
+	// A web page is never the stream, even when its address reads like a
+	// video file (file-sharing pages such as ".../name.mp4.html").
+	if strings.Contains(ct, "html") {
+		return browserMediaCandidate{}, false
+	}
 	// Some sign-in pages play a decorative static clip from a static-asset host;
 	// it must never be mistaken for the requested video.
 	if host := strings.ToLower(u.Hostname()); host == "ttwstatic.com" || strings.HasSuffix(host, ".ttwstatic.com") {

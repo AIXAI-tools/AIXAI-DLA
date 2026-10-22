@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.10"
+	appVersion = "4.2.11"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1437,7 +1437,11 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			// A result of yt-dlp's generic extractor is a guess from the page
 			// and is checked strictly; a site's own extractor is trusted more.
 			strict := site == "" && a.lastYtGeneric
+			stepFiles := len(a.itemFiles)
 			err = a.finishStep(ctx, mode, cfg, strict)
+			if err == nil && !a.stopRequested.Load() {
+				a.renameIDOnlyFiles(ctx, rawURL, stepFiles) // title_fallback.go
+			}
 			if err != nil && isMediaCheckFailure(err) && site == "" && mode != 3 && mode != 4 && !a.stopRequested.Load() {
 				a.diagFail(err)
 				a.postLog("⚠ yt-dlp 取得的檔案未通過檢查，改用其他方式重新取得。\r\n")
@@ -3940,6 +3944,11 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	var outputTail string
 	for {
 		line, lineErr := reader.ReadString('\n')
+		if engine == "Lux" && isGoStackLine(line) {
+			// Lux follows each error with Go stack traces; the error line
+			// itself says what went wrong.
+			line = ""
+		}
 		if len(line) > 0 {
 			appendOutputTail(&outputTail, line, 96*1024)
 			if isYtDlp && strings.Contains(line, "[") {
@@ -4011,9 +4020,35 @@ func summarizeCommandOutputForEngine(output string, cause error, engine string) 
 	return result
 }
 
+// isGoStackLine reports a line of a Go stack trace ("pkg/path.Func" followed
+// by an indented "/path/file.go:123").
+func isGoStackLine(line string) bool {
+	l := strings.TrimSpace(line)
+	if l == "" {
+		return false
+	}
+	if goStackFileRE.MatchString(l) {
+		return true
+	}
+	return goStackFuncRE.MatchString(l)
+}
+
+var (
+	goStackFileRE = regexp.MustCompile(`^/\S+\.(go|s):\d+( \+0x[0-9a-f]+)?$`)
+	goStackFuncRE = regexp.MustCompile(`^(main|runtime|[\w.-]+\.[a-z]{2,}/[\w./-]+)\.[\w().*]+(\(.*\))?$`)
+)
+
 func summarizeCommandOutput(output string, cause error) string {
 	normalized := strings.ReplaceAll(output, "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
+	var lines []string
+	for _, l := range strings.Split(normalized, "\n") {
+		// "... error:" with the reason on the next line (Lux) is one message.
+		if t := strings.TrimSpace(l); t != "" && len(lines) > 0 && strings.HasSuffix(strings.TrimSpace(lines[len(lines)-1]), "error:") {
+			lines[len(lines)-1] = strings.TrimSpace(lines[len(lines)-1]) + " " + t
+			continue
+		}
+		lines = append(lines, l)
+	}
 	var important []string
 	var fallback []string
 	for _, raw := range lines {
@@ -4037,6 +4072,9 @@ func summarizeCommandOutput(output string, cause error) string {
 			strings.Contains(lower, "password") ||
 			strings.Contains(lower, "no video formats") ||
 			strings.Contains(lower, "precondition failed") ||
+			strings.Contains(lower, "error opening") || // FFmpeg, after its version banner
+			strings.Contains(lower, "invalid data found") ||
+			strings.Contains(lower, "server returned") ||
 			strings.Contains(lower, "forbidden") ||
 			strings.Contains(lower, "too many requests") {
 			important = append(important, line)
