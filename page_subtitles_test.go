@@ -87,3 +87,31 @@ func TestBalancedObjectSkipsStrings(t *testing.T) {
 		t.Fatalf("unterminated = %q", got)
 	}
 }
+
+func TestIsThumbnailTrack(t *testing.T) {
+	thumbs := "WEBVTT\n\n1\n00:00:00.000 --> 00:01:01.780\nhttps://img.example.com/s0000.jpg#xywh=0,0,200,112\n\n2\n00:01:01.780 --> 00:02:03.560\nhttps://img.example.com/s0000.jpg#xywh=200,0,200,112\n"
+	if !isThumbnailTrack(thumbs) {
+		t.Fatal("sprite thumbnail track not detected")
+	}
+	if !isThumbnailTrack("WEBVTT\n\n00:00.000 --> 00:05.000\nthumbs/001.png\n") {
+		t.Fatal("image-file thumbnail track not detected")
+	}
+	for _, sub := range []string{
+		"WEBVTT\n\n00:00.000 --> 00:01.000\nhi\n",
+		"1\n00:00:00,000 --> 00:00:01,000\n看 https://x.example.com/a.jpg 這張\n\n2\n00:00:01,000 --> 00:00:02,000\nok\n",
+		"WEBVTT\n\n00:00.000 --> 00:01.000\n42\n\n00:01.000 --> 00:02.000\nphoto.jpg is here\n",
+	} {
+		if isThumbnailTrack(sub) {
+			t.Errorf("subtitle taken for thumbnails: %q", sub)
+		}
+	}
+}
+
+func TestSubtitleFromJSONSkipsThumbnailKind(t *testing.T) {
+	if _, ok := subtitleFromJSON(map[string]any{"file": "https://x.example.com/t.vtt", "kind": "thumbnails"}, ""); ok {
+		t.Fatal("thumbnails track accepted")
+	}
+	if _, ok := subtitleFromJSON(map[string]any{"file": "https://x.example.com/c.vtt", "kind": "captions", "label": "English"}, ""); !ok {
+		t.Fatal("captions track rejected")
+	}
+}

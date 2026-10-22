@@ -82,6 +82,10 @@ func subtitleFromJSON(m map[string]any, baseURL string) (pageSubtitle, bool) {
 		}
 		return ""
 	}
+	// Players list their preview thumbnails and chapters as tracks too.
+	if kind := strings.ToLower(str("kind")); kind != "" && kind != "subtitles" && kind != "captions" {
+		return pageSubtitle{}, false
+	}
 	src := resolveCandidateURL(baseURL, str("src", "url", "file"))
 	if src == "" {
 		return pageSubtitle{}, false
@@ -238,7 +242,35 @@ func fetchSubtitle(ctx context.Context, raw, pageURL string, cfg settings) (stri
 	if !strings.Contains(text, "-->") && !strings.Contains(text, "[Script Info]") {
 		return "", errors.New("內容不是字幕檔")
 	}
+	if isThumbnailTrack(text) {
+		return "", errThumbnailTrack
+	}
 	return text, nil
+}
+
+var errThumbnailTrack = errors.New("內容是進度列的預覽縮圖清單，不是字幕")
+
+var thumbnailCueRE = regexp.MustCompile(`(?i)#xywh=|\.(?:jpe?g|png|webp|gif|bmp)(?:[?#]|$)`)
+
+// isThumbnailTrack reports whether a WebVTT/SRT file is a player's preview
+// thumbnail track (every cue is an image, often a sprite region "#xywh=…")
+// rather than text. Such files use the same format and type as subtitles.
+func isThumbnailTrack(text string) bool {
+	cues := 0
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "-->") || strings.HasPrefix(line, "WEBVTT") {
+			continue
+		}
+		if _, err := strconv.Atoi(line); err == nil {
+			continue
+		}
+		if !thumbnailCueRE.MatchString(line) {
+			return false
+		}
+		cues++
+	}
+	return cues > 0
 }
 
 // savePageSubtitles saves the page's subtitles for episode ep next to each
@@ -272,6 +304,11 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 			return
 		}
 		text, err := fetchSubtitle(ctx, s.URL, pageURL, cfg)
+		if errors.Is(err, errThumbnailTrack) {
+			a.postLog("ℹ 略過進度列的預覽縮圖清單（格式與字幕相同，但不是字幕）。\r\n")
+			a.diagNote("略過預覽縮圖清單（不是字幕）")
+			continue
+		}
 		if err != nil {
 			a.postLog(fmt.Sprintf("⚠ 字幕下載失敗（%s）：%s\r\n", hostOnly(s.URL), firstLine(err.Error())))
 			a.diagNote("外掛字幕 ✗ " + firstLine(err.Error()))

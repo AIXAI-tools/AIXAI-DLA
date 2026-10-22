@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.13"
+	appVersion = "4.2.14"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1405,7 +1405,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 		// A site yt-dlp knows but whose page it could not read this time (one
 		// video of the site, or after a site change) gets the same fallback
 		// chain; the site itself stays marked as supported for later items.
-		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && (isExtractorFailure(err) || antiBot) {
+		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && (isExtractorFailure(err) || antiBot || isGenericForbidden(err)) {
 			a.postLog("⚠ yt-dlp 無法解析此頁面，改用 AIXAI 多引擎備援流程。\r\n")
 			a.postStatus("狀態：yt-dlp 無法解析此頁面，正在嘗試備援解析…")
 			if fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg); fallbackErr == nil {
@@ -1569,6 +1569,13 @@ func isAntiBotChallenge(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "anti-bot challenge")
+}
+
+// isGenericForbidden: yt-dlp's generic extractor found a media link in the
+// page but the media server refused it (e.g. the page held an expired
+// signed link); the page's own player may still get a working one.
+func isGenericForbidden(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "[generic]") && isHTTPForbidden(err)
 }
 
 func isUnsupportedURL(err error) bool {

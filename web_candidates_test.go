@@ -276,3 +276,14 @@ func TestPageEpisodeDirectPlayURL(t *testing.T) {
 		t.Fatal("preloaded episode 4 taken for episode 3")
 	}
 }
+
+func TestIsGenericForbidden(t *testing.T) {
+	if !isGenericForbidden(errors.New("ERROR: [generic] 1?lang=en-US: Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)")) {
+		t.Fatal("generic 403 not detected")
+	}
+	for _, e := range []error{nil, errors.New("ERROR: unable to download video data: HTTP Error 403: Forbidden"), errors.New("ERROR: [generic] x: Unable to download webpage: HTTP Error 404: Not Found")} {
+		if isGenericForbidden(e) {
+			t.Errorf("wrongly detected: %v", e)
+		}
+	}
+}

@@ -824,6 +824,35 @@ func (a *app) prioritizeJob(id int) string {
 	return ""
 }
 
+// groupJobsBySite (整理任務排序) puts the tasks of the same website next to
+// each other: the websites keep the order of their first task, and the tasks
+// of one website keep their order.
+func (a *app) groupJobsBySite() {
+	a.jobsMu.Lock()
+	a.jobs = groupJobsBySite(a.jobs)
+	a.finishMoveLocked()
+}
+
+func groupJobsBySite(jobs []*job) []*job {
+	var keys []string
+	groups := map[string][]*job{}
+	for _, j := range jobs {
+		k := ""
+		if s := jobSites(j.URLs); len(s) > 0 {
+			k = s[0]
+		}
+		if _, ok := groups[k]; !ok {
+			keys = append(keys, k)
+		}
+		groups[k] = append(groups[k], j)
+	}
+	out := make([]*job, 0, len(jobs))
+	for _, k := range keys {
+		out = append(out, groups[k]...)
+	}
+	return out
+}
+
 // finishMoveLocked saves the new order, makes the tasks in the way step
 // aside and starts what can start; jobsMu must be held and is released.
 func (a *app) finishMoveLocked() {

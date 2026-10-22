@@ -176,3 +176,17 @@ func TestEpisodeLabelSurvivesLongTitle(t *testing.T) {
 		t.Errorf("trailing space or dot kept: %q", got)
 	}
 }
+
+func TestGroupJobsBySite(t *testing.T) {
+	jobs := []*job{
+		testJob(1, jobRunning, "https://www.site-a.com/1"),
+		testJob(2, jobQueued, "https://www.site-b.com/1"),
+		testJob(3, jobQueued, "https://m.site-a.com/2"),
+		testJob(4, jobPaused, "https://www.site-c.com/1"),
+		testJob(5, jobQueued, "https://www.site-b.com/2"),
+		testJob(6, jobDone, "https://www.site-a.com/3"),
+	}
+	if ids := jobIDs(groupJobsBySite(jobs)); ids != "136254" {
+		t.Fatalf("order = %s", ids)
+	}
+}

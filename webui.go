@@ -306,6 +306,7 @@ type uiInit struct {
 	Failed      []failedView `json:"failed"`
 	DataDefault string       `json:"dataDefault"`
 	MaxLimit    int          `json:"maxLimit"`
+	UIState     string       `json:"uiState"` // ui_state.go
 }
 
 type startRequest struct {
@@ -378,11 +379,13 @@ func (a *app) bindUI() {
 		})
 		a.startReplyPolling()
 		return uiInit{Jobs: a.jobViews(), Failed: a.failedViews(), MaxLimit: maxJobsLimit, Version: appVersion, Title: appTitle, Settings: a.cfg, Modes: modes, Logins: logins, Browsers: captureBrowserOptions(), Presets: presets,
-			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, DirectSend: feedbackEndpoint != "", LogFile: a.dataFolder(), DataDefault: defaultDataFolder()}
+			Repo: updateRepoOwner + "/" + updateRepoName, Email: feedbackEmail, DirectSend: feedbackEndpoint != "", LogFile: a.dataFolder(), DataDefault: defaultDataFolder(), UIState: a.loadUIState()}
 	})
 	_ = w.Bind("goStart", a.startFromUI)
 	_ = w.Bind("goJobAction", func(id int, action string) string { return a.jobAction(id, action) })
 	_ = w.Bind("goJobMove", func(id, target int, after bool) string { return a.moveJob(id, target, after) })
+	_ = w.Bind("goSaveUIState", func(s string) { a.saveUIState(s) })
+	_ = w.Bind("goJobsGroup", func() { a.groupJobsBySite() })
 	_ = w.Bind("goJobPrioritize", func(id int) string { return a.prioritizeJob(id) })
 	_ = w.Bind("goClearFinished", func() { a.clearFinishedJobs() })
 	_ = w.Bind("goPauseAll", func() int { return a.pauseAllJobs(false) })
