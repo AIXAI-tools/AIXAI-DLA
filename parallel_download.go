@@ -31,7 +31,12 @@ const (
 	parallelMinSize     = 64 << 20 // smaller files gain little; yt-dlp keeps them
 	parallelChunkTries  = 6
 	parallelStateSuffix = ".aixai-parts.json"
+	parallelSampleSize  = 64 << 10 // compared with the server before resuming
 )
+
+// parallelIdleTimeout: a piece whose connection stays open but sends nothing
+// for this long is given up and fetched again (a variable for the tests).
+var parallelIdleTimeout = 60 * time.Second
 
 // errNotParallel: the server cannot serve pieces (no ranges) or the file is
 // small; the caller downloads it the usual way.
@@ -66,6 +71,21 @@ func loadParallelState(dest string, size int64) *parallelState {
 		var s parallelState
 		if json.Unmarshal(b, &s) == nil && s.Size == size && s.ChunkSize > 0 &&
 			len(s.Done) == int((size+s.ChunkSize-1)/s.ChunkSize) {
+			st, err := os.Stat(dest + ".part")
+			if err == nil && st.Size() == size {
+				return &s
+			}
+			// The record is ours but its file is gone or cut short: only the
+			// pieces done that are still inside the file count.
+			var have int64
+			if err == nil && st.Size() < size {
+				have = st.Size()
+			}
+			for i := range s.Done {
+				if _, end := s.chunkRange(i); end >= have {
+					s.Done[i] = false
+				}
+			}
 			return &s
 		}
 	}
@@ -130,16 +150,81 @@ func probeRangeSize(ctx context.Context, client *http.Client, rawURL string, hea
 	return strconv.ParseInt(m[1], 10, 64)
 }
 
+// samePieces checks the start of the first and the last piece already done
+// against the server, so a file left by an earlier download that has the
+// same name and size but other content is not continued. Asking by content
+// keeps resuming with a fresh stream address of the same file.
+func samePieces(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, part string, s *parallelState) (bool, error) {
+	first, last := -1, -1
+	for i, d := range s.Done {
+		if d {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first < 0 {
+		return true, nil
+	}
+	f, err := os.Open(part)
+	if err != nil {
+		return false, nil
+	}
+	defer f.Close()
+	for _, i := range []int{first, last} {
+		start, end := s.chunkRange(i)
+		if end-start+1 > parallelSampleSize {
+			end = start + parallelSampleSize - 1
+		}
+		local := make([]byte, end-start+1)
+		if _, err := f.ReadAt(local, start); err != nil {
+			return false, nil
+		}
+		req, err := rangeRequest(ctx, rawURL, headers, start, end)
+		if err != nil {
+			return false, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false, err
+		}
+		remote, err := io.ReadAll(io.LimitReader(resp.Body, end-start+2))
+		resp.Body.Close()
+		if err != nil {
+			return false, err
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		if string(remote) != string(local) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // fetchChunk writes bytes [start, end] of the file at their place in f,
 // counting them in got as they arrive. It returns how many it wrote.
 func fetchChunk(ctx context.Context, client *http.Client, rawURL string, headers map[string]string, f *os.File, start, end int64, got *atomic.Int64) (int64, error) {
-	req, err := rangeRequest(ctx, rawURL, headers, start, end)
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var stalled atomic.Bool
+	idle := time.AfterFunc(parallelIdleTimeout, func() { stalled.Store(true); cancel() })
+	defer idle.Stop()
+	stallErr := func(err error) error {
+		if stalled.Load() && ctx.Err() == nil {
+			return fmt.Errorf("超過 %d 秒沒有收到資料", int(parallelIdleTimeout/time.Second))
+		}
+		return err
+	}
+	req, err := rangeRequest(cctx, rawURL, headers, start, end)
 	if err != nil {
 		return 0, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, stallErr(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusPartialContent {
@@ -156,17 +241,19 @@ func fetchChunk(ctx context.Context, client *http.Client, rawURL string, headers
 			if off+int64(n)-1 > end {
 				return off - start, errors.New("伺服器回傳的資料超出範圍")
 			}
+			idle.Stop() // only waiting for the server counts, not the disk
 			if _, werr := f.WriteAt(buf[:n], off); werr != nil {
 				return off - start, werr
 			}
 			off += int64(n)
 			got.Add(int64(n))
+			idle.Reset(parallelIdleTimeout)
 		}
 		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
-			return off - start, rerr
+			return off - start, stallErr(rerr)
 		}
 	}
 	if off != end+1 {
@@ -206,13 +293,26 @@ func (a *app) parallelDownload(ctx context.Context, rawURL string, headers map[s
 	if size < parallelMinSize {
 		return errNotParallel
 	}
+	part := dest + ".part"
 	state := loadParallelState(dest, size)
+	vctx, cancelVerify := context.WithTimeout(ctx, 60*time.Second)
+	same, err := samePieces(vctx, client, rawURL, headers, part, state)
+	cancelVerify()
+	if err != nil {
+		if ctx.Err() != nil {
+			return errStopped
+		}
+		return fmt.Errorf("無法核對已下載的部分：%w", err)
+	}
+	if !same {
+		a.postLog("ℹ 已下載的部分與目前的檔案內容不同，從頭下載。\r\n")
+		state = newParallelState(size)
+	}
 	// Recorded before the file is sized, so a ".part" without a record is
 	// always yt-dlp's (a plain prefix), never one of ours.
 	if err := saveParallelState(dest, state); err != nil {
 		return err
 	}
-	part := dest + ".part"
 	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err

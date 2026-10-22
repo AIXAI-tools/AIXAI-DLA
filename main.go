@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.15"
+	appVersion = "4.2.16"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -415,8 +415,8 @@ type haokanStream struct {
 
 var parameterPresets = []parameterPreset{
 	{Label: "▼ 點選常用參數，會自動加入上方欄位", Args: ""},
-	{Label: "-x｜只擷取音訊（通常搭配 --audio-format mp3）", Args: "-x"},
-	{Label: "--audio-format mp3｜將音訊轉成 MP3（需搭配 -x）", Args: "--audio-format mp3"},
+	{Label: "-x｜只擷取音訊（通常搭配「將音訊轉成 MP3」）", Args: "-x"},
+	{Label: "--audio-format mp3｜將音訊轉成 MP3（需搭配「只擷取音訊」）", Args: "--audio-format mp3"},
 	{Label: "--audio-quality 0｜MP3 使用最佳可變位元率品質", Args: "--audio-quality 0"},
 	{Label: "--write-subs｜下載影片提供的人工字幕", Args: "--write-subs"},
 	{Label: "--write-auto-subs｜下載平台自動產生的字幕", Args: "--write-auto-subs"},

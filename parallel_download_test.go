@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // rangeServer serves data with Range support; failFirst makes the first
@@ -105,19 +106,21 @@ func TestParallelDownloadRetriesBrokenPieces(t *testing.T) {
 }
 
 func TestParallelDownloadResumesYtDlpPart(t *testing.T) {
+	const keepAt = parallelSampleSize + 100
 	data := testData(parallelMinSize + 7)
 	srv, _ := rangeServer(t, data, true, false)
 	dest := filepath.Join(t.TempDir(), "v.mp4")
 	// yt-dlp left a plain prefix of 2.5 pieces; the leading 2 count as done.
-	// Their bytes are poisoned so a re-download would show.
+	// Bytes outside the compared samples are poisoned so a re-download would
+	// show.
 	prefix := append([]byte(nil), data[:5*parallelChunkSize/2]...)
-	copy(prefix[:10], "KEEPMEKEEP")
+	copy(prefix[keepAt:keepAt+10], "KEEPMEKEEP")
 	os.WriteFile(dest+".part", prefix, 0644)
 	if err := testApp(t).parallelDownload(context.Background(), srv.URL+"/v.mp4", testHeaders, dest); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(dest)
-	if !bytes.HasPrefix(got, []byte("KEEPMEKEEP")) || !bytes.Equal(got[10:], data[10:]) {
+	if string(got[keepAt:keepAt+10]) != "KEEPMEKEEP" || !bytes.Equal(got[:keepAt], data[:keepAt]) || !bytes.Equal(got[keepAt+10:], data[keepAt+10:]) {
 		t.Fatal("resume did not keep the finished pieces or got the rest wrong")
 	}
 }
@@ -180,6 +183,171 @@ func TestCapturedDirectFile(t *testing.T) {
 	h := capturedRequestHeaders("https://example.com/page", browserMediaCandidate{RequestHeaders: map[string]string{"user-agent": "UA", "range": "bytes=0-"}})
 	if h["Referer"] != "https://example.com/page" || h["User-Agent"] != "UA" || strings.Contains(fmt.Sprint(h), "bytes=0-") {
 		t.Fatalf("headers: %v", h)
+	}
+}
+
+// stopPartway runs a download against srv and stops it after a few pieces,
+// leaving a progress record and a sized ".part".
+func stopPartway(t *testing.T, srv *httptest.Server, dest string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int64
+	next := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 4 {
+			cancel()
+		}
+		next.ServeHTTP(w, r)
+	})
+	defer func() { srv.Config.Handler = next }()
+	if err := testApp(t).parallelDownload(ctx, srv.URL+"/v.mp4", testHeaders, dest); !errors.Is(err, errStopped) {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, err := os.Stat(dest + parallelStateSuffix); err != nil {
+		t.Fatal("progress record missing after stop")
+	}
+}
+
+// A progress record whose ".part" was removed or cut short must not keep
+// pieces that are no longer in the file (they would stay zero).
+func TestParallelDownloadRecordWithoutFile(t *testing.T) {
+	data := testData(parallelMinSize + 11)
+	for _, cut := range []string{"removed", "shortened"} {
+		srv, _ := rangeServer(t, data, true, false)
+		dest := filepath.Join(t.TempDir(), "v.mp4")
+		stopPartway(t, srv, dest)
+		if cut == "removed" {
+			os.Remove(dest + ".part")
+		} else {
+			os.Truncate(dest+".part", parallelChunkSize+100)
+		}
+		if err := testApp(t).parallelDownload(context.Background(), srv.URL+"/v.mp4", testHeaders, dest); err != nil {
+			t.Fatalf("%s: %v", cut, err)
+		}
+		if got, _ := os.ReadFile(dest); !bytes.Equal(got, data) {
+			t.Fatalf("%s: file differs after resume", cut)
+		}
+	}
+}
+
+// A file of the same name and size but other content starts over; the same
+// content behind a fresh address continues (checked by the other tests).
+func TestParallelDownloadOtherContentSameSize(t *testing.T) {
+	oldData := testData(parallelMinSize + 13)
+	newData := append([]byte(nil), oldData...)
+	for i := range newData {
+		newData[i] ^= 0x5a
+	}
+	oldSrv, _ := rangeServer(t, oldData, true, false)
+	dest := filepath.Join(t.TempDir(), "v.mp4")
+	stopPartway(t, oldSrv, dest)
+	newSrv, _ := rangeServer(t, newData, true, false)
+	if err := testApp(t).parallelDownload(context.Background(), newSrv.URL+"/v.mp4", testHeaders, dest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dest); !bytes.Equal(got, newData) {
+		t.Fatal("old pieces were mixed into the new file")
+	}
+}
+
+// stallServer serves ranges; the first request of each piece sends half of
+// it and then keeps the connection open without sending more. With trickle
+// set, the first piece instead arrives slowly but steadily.
+func stallServer(t *testing.T, data []byte, trickle bool) (*httptest.Server, func(string) int) {
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rg := r.Header.Get("Range")
+		var s, e int64
+		fmt.Sscanf(rg, "bytes=%d-%d", &s, &e)
+		if e >= int64(len(data)) {
+			e = int64(len(data)) - 1
+		}
+		mu.Lock()
+		seen[rg]++
+		first := seen[rg] == 1
+		mu.Unlock()
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", s, e, len(data)))
+		w.Header().Set("Content-Length", strconv.FormatInt(e-s+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		piece := data[s : e+1]
+		switch {
+		case trickle && s == 0 && e > 0 && first:
+			step := len(piece) / 16
+			for i := 0; i < 16; i++ {
+				w.Write(piece[i*step : (i+1)*step])
+				w.(http.Flusher).Flush()
+				time.Sleep(150 * time.Millisecond)
+			}
+			w.Write(piece[16*step:])
+		case !trickle && e > 0 && first:
+			w.Write(piece[:len(piece)/2])
+			w.(http.Flusher).Flush()
+			<-r.Context().Done() // open, but nothing more
+		default:
+			w.Write(piece)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func(rg string) int { mu.Lock(); defer mu.Unlock(); return seen[rg] }
+}
+
+func TestParallelDownloadStalledPieceRetried(t *testing.T) {
+	old := parallelIdleTimeout
+	parallelIdleTimeout = 300 * time.Millisecond
+	defer func() { parallelIdleTimeout = old }()
+	data := testData(parallelMinSize + 17)
+	srv, seen := stallServer(t, data, false)
+	dest := filepath.Join(t.TempDir(), "v.mp4")
+	done := make(chan error, 1)
+	go func() { done <- testApp(t).parallelDownload(context.Background(), srv.URL+"/v.mp4", testHeaders, dest) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("download hung on a stalled connection")
+	}
+	if got, _ := os.ReadFile(dest); !bytes.Equal(got, data) {
+		t.Fatal("file differs after stalled pieces")
+	}
+	if seen(fmt.Sprintf("bytes=0-%d", parallelChunkSize-1)) < 2 {
+		t.Fatal("stalled piece was not fetched again")
+	}
+}
+
+func TestParallelDownloadSlowSteadyPieceKept(t *testing.T) {
+	old := parallelIdleTimeout
+	parallelIdleTimeout = time.Second
+	defer func() { parallelIdleTimeout = old }()
+	data := testData(parallelMinSize + 19)
+	srv, seen := stallServer(t, data, true)
+	dest := filepath.Join(t.TempDir(), "v.mp4")
+	if err := testApp(t).parallelDownload(context.Background(), srv.URL+"/v.mp4", testHeaders, dest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dest); !bytes.Equal(got, data) {
+		t.Fatal("file differs")
+	}
+	if n := seen(fmt.Sprintf("bytes=0-%d", parallelChunkSize-1)); n != 1 {
+		t.Fatalf("slow but steady piece was fetched %d times", n)
+	}
+}
+
+func TestParallelDownloadStoppedWhileStalled(t *testing.T) {
+	data := testData(parallelMinSize + 23)
+	srv, _ := stallServer(t, data, false)
+	dest := filepath.Join(t.TempDir(), "v.mp4")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(time.Second, cancel)
+	start := time.Now()
+	if err := testApp(t).parallelDownload(ctx, srv.URL+"/v.mp4", testHeaders, dest); !errors.Is(err, errStopped) {
+		t.Fatalf("stop: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("stop waited for the stalled connection")
 	}
 }
 
