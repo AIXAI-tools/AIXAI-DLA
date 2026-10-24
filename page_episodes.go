@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Some episode pages carry the whole series in their player data: one object
@@ -73,6 +74,50 @@ func (h pageEpisodeHint) matches(stream string) bool {
 		}
 	}
 	return false
+}
+
+// freshEpisodeStream is a stream the capture browser saw the page load for
+// another episode of the series (players preload the next episodes). Its
+// signature is current, while the page data the site serves from its cache
+// often carries expired ones for the same file.
+type freshEpisodeStream struct {
+	URL     string
+	Episode int
+	Seen    time.Time
+}
+
+// freshStreamTTL: signed stream addresses seen so far stay valid for about an
+// hour; keep a margin.
+const freshStreamTTL = 45 * time.Minute
+
+// rememberFreshStream records a preloaded stream of episode ep and reports
+// whether it was not known yet.
+func (a *app) rememberFreshStream(stream string, ep int) bool {
+	a.freshMu.Lock()
+	defer a.freshMu.Unlock()
+	for i, f := range a.freshStreams {
+		if sameStreamPath(f.URL, stream) {
+			a.freshStreams[i] = freshEpisodeStream{URL: stream, Episode: ep, Seen: time.Now()}
+			return false
+		}
+	}
+	a.freshStreams = append(a.freshStreams, freshEpisodeStream{URL: stream, Episode: ep, Seen: time.Now()})
+	return true
+}
+
+// freshStreamFor returns a recently seen address of the same file as one of
+// streams (in their order), or "".
+func (a *app) freshStreamFor(streams []string) string {
+	a.freshMu.Lock()
+	defer a.freshMu.Unlock()
+	for _, s := range streams {
+		for _, f := range a.freshStreams {
+			if time.Since(f.Seen) < freshStreamTTL && sameStreamPath(f.URL, s) {
+				return f.URL
+			}
+		}
+	}
+	return ""
 }
 
 // sameStreamPath reports whether two stream addresses name the same file
@@ -326,9 +371,15 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 	stream := streams[0]
 	// Remember the listed streams: if they cannot be fetched directly, the
 	// capture browser uses them to tell this episode apart from preloaded
-	// neighbours.
-	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Streams: streams}
-	a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
+	// neighbours, and never takes another episode's stream for this one.
+	_, others := pageEpisodeListed(body, ep)
+	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Streams: streams, Others: others}
+	if fresh := a.freshStreamFor(streams); fresh != "" {
+		stream = fresh
+		a.postLog(fmt.Sprintf("→ 使用先前播放其他集時瀏覽器預先載入的第 %d 集串流（%s；網頁資料中的連結可能已過期）。\r\n", ep, hostOnly(stream)))
+	} else {
+		a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
+	}
 	streamMode := mode
 	if mode == 2 {
 		streamMode = 0

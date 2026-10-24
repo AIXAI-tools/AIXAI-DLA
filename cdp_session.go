@@ -59,8 +59,20 @@ func (b *cdpBrowser) setWindowState(state string) {
 
 // hide sends the window to the background without stealing focus.
 func (b *cdpBrowser) hide() {
+	b.setFocusEmulation(true)
 	b.setWindowState("minimized")
 	b.visible = false
+}
+
+// setFocusEmulation makes the page act focused and visible even while
+// minimised (players may refuse to start otherwise). It is turned off while
+// the user acts in the window, so pages that check the window really lost
+// focus (e.g. while an ad opened in another tab) see what actually happens.
+func (b *cdpBrowser) setFocusEmulation(on bool) {
+	if b.sessionID == "" {
+		return
+	}
+	_ = b.send("Emulation.setFocusEmulationEnabled", map[string]interface{}{"enabled": on})
 }
 
 // reveal brings the window on screen, centred on the work area, for user action.
@@ -69,6 +81,7 @@ func (b *cdpBrowser) reveal(scale float64) {
 		return
 	}
 	b.setWindowState("normal")
+	b.setFocusEmulation(false)
 	var work rect
 	procSystemParametersInfoW.Call(SPI_GETWORKAREA, 0, uintptr(unsafe.Pointer(&work)), 0)
 	ww, wh := int(float64(1180)*scale), int(float64(820)*scale)
@@ -269,6 +282,9 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
+		// Extensions synced into the profile (ad blockers in particular) block
+		// the popups that ad-gated players open while the user unlocks them.
+		"--disable-extensions",
 		"--disable-session-crashed-bubble",
 		"--hide-crash-restore-bubble",
 		"--window-size=1180,820",
@@ -378,9 +394,6 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	// Runtime.enable is not sent: nothing here listens to its events
 	// (Runtime.evaluate works without it), and anti-bot checks detect it and
 	// then keep repeating their "verify you are human" step.
-	// Pages must behave as if focused and visible even while minimised, or
-	// players may refuse to start.
-	_ = b.send("Emulation.setFocusEmulationEnabled", map[string]interface{}{"enabled": true})
 	_ = b.send("Page.addScriptToEvaluateOnNewDocument", map[string]interface{}{"source": cdpAutoplayScript()})
 	if win, err := b.browserCall("Browser.getWindowForTarget", map[string]interface{}{"targetId": b.targetID}); err == nil {
 		b.windowID = int(cdpFloat(win.Result, "windowId"))
@@ -1098,9 +1111,13 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				continue
 			}
 			c.EpisodeMatch = streamHasEpisode(c.URL, pageEpisode) || listed.matches(c.URL)
-			if !c.EpisodeMatch && listed.otherEpisode(c.URL) > 0 {
+			if other := listed.otherEpisode(c.URL); !c.EpisodeMatch && other > 0 {
 				// The page data lists this stream for another episode: a
-				// preloaded neighbour, never this one.
+				// preloaded neighbour, never this one. Keep it for that
+				// episode's turn, as its signature is current.
+				if a.rememberFreshStream(c.URL, other) {
+					a.postLog(fmt.Sprintf("ℹ 頁面預先載入了第 %d 集的串流，先記下來，輪到該集時直接使用。\r\n", other))
+				}
 				continue
 			}
 			c.UsedByEpisode = a.episodeGuard.streamUsedBy(c.URL)

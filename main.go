@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.18"
+	appVersion = "4.2.19"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -608,6 +608,10 @@ type app struct {
 	// deferWithheld: an episode the site withholds is put off to the end of
 	// the batch instead of opening the capture browser (first visit only).
 	deferWithheld bool
+	// freshStreams: other episodes' streams the capture browser saw preloaded
+	// during this job (page_episodes.go), used when their turn comes.
+	freshMu      sync.Mutex
+	freshStreams []freshEpisodeStream
 
 	busy          atomic.Bool
 	stopRequested atomic.Bool
