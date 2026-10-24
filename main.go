@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.17"
+	appVersion = "4.2.18"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -1749,11 +1749,12 @@ type tiktokDramaBitrate struct {
 type tiktokDramaItem struct {
 	ID    string `json:"id"`
 	Video struct {
-		Width       int                        `json:"width"`
-		Height      int                        `json:"height"`
-		Bitrate     int64                      `json:"bitrate"`
-		PlayAddress tiktokDramaPlaybackAddress `json:"playAddr"`
-		BitrateInfo []tiktokDramaBitrate       `json:"bitrateInfo"`
+		Width         int                        `json:"width"`
+		Height        int                        `json:"height"`
+		Bitrate       int64                      `json:"bitrate"`
+		PlayAddress   tiktokDramaPlaybackAddress `json:"playAddr"`
+		BitrateInfo   []tiktokDramaBitrate       `json:"bitrateInfo"`
+		SubtitleInfos []tiktokSubtitleInfo       `json:"subtitleInfos"`
 	} `json:"video"`
 	DramaInfo struct {
 		DramaID        string `json:"dramaID"`
@@ -1763,6 +1764,16 @@ type tiktokDramaItem struct {
 			EpisodeNumber int `json:"EpisodeNumber"`
 		} `json:"DramaVideoData"`
 	} `json:"dramaInfo"`
+}
+
+// tiktokSubtitleInfo is one subtitle file TikTok lists for a video (WebVTT,
+// served without an extension and as video/mp4). Source is ASR (speech
+// recognition) or MT (machine translation).
+type tiktokSubtitleInfo struct {
+	URL              string `json:"Url"`
+	LanguageCodeName string `json:"LanguageCodeName"`
+	Source           string `json:"Source"`
+	Format           string `json:"Format"`
 }
 
 type tiktokItemDetailResponse struct {

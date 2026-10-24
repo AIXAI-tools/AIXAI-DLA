@@ -316,9 +316,51 @@ func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode, maxSh
 			ContentType:    "video/mp4",
 			Score:          200,
 			SeenAt:         time.Now(),
+			Subtitles:      tiktokItemSubtitles(item),
 		}, tiktokAPIMatched, listed
 	}
 	return browserMediaCandidate{}, res, listed
+}
+
+// tiktokItemSubtitles lists the episode's separate subtitle files. The words
+// shown in a short drama's picture are part of the video itself (each
+// language is its own video file); what TikTok lists here is usually only an
+// automatic transcript, saved next to the video as an extra.
+func tiktokItemSubtitles(item tiktokDramaItem) []pageSubtitle {
+	var out []pageSubtitle
+	seen := map[string]bool{}
+	for _, s := range item.Video.SubtitleInfos {
+		u := strings.TrimSpace(s.URL)
+		if u == "" || seen[u] || !strings.HasPrefix(u, "https://") {
+			continue
+		}
+		if f := strings.ToLower(s.Format); f != "" && f != "webvtt" {
+			continue
+		}
+		seen[u] = true
+		out = append(out, pageSubtitle{URL: u, Lang: s.LanguageCodeName, Label: tiktokSubtitleLabel(s), Default: len(out) == 0})
+	}
+	return out
+}
+
+func tiktokSubtitleLabel(s tiktokSubtitleInfo) string {
+	code := strings.ToLower(s.LanguageCodeName)
+	lang := s.LanguageCodeName
+	switch {
+	case strings.HasPrefix(code, "eng"):
+		lang = "英文"
+	case strings.HasPrefix(code, "cmn-hant"):
+		lang = "繁體中文"
+	case strings.HasPrefix(code, "cmn-hans"):
+		lang = "簡體中文"
+	}
+	switch strings.ToUpper(s.Source) {
+	case "ASR":
+		return lang + "自動字幕，語音辨識"
+	case "MT":
+		return lang + "字幕，機器翻譯"
+	}
+	return lang + "字幕"
 }
 
 // tiktokCaptureDiag counts what a TikTok episode capture saw: the API

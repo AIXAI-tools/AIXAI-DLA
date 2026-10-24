@@ -332,7 +332,11 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 					_ = os.Remove(tmp)
 				}
 			}
-			a.postLog("✓ 已下載字幕：" + filepath.Base(path) + "\r\n")
+			label := ""
+			if s.Label != "" {
+				label = "（" + s.Label + "）"
+			}
+			a.postLog("✓ 已下載字幕：" + filepath.Base(path) + label + "\r\n")
 			saved++
 		}
 	}

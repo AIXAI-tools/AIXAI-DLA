@@ -746,7 +746,11 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		stateMu.Lock()
 		loaded := append([]string(nil), subFiles...)
 		stateMu.Unlock()
-		c.Subtitles = captureSubtitles(c.PageJSON, loaded, rawURL)
+		// Keep the subtitles the stream came with (TikTok API) when the page
+		// showed none of the usual kind.
+		if subs := captureSubtitles(c.PageJSON, loaded, rawURL); len(subs) > 0 || len(c.Subtitles) == 0 {
+			c.Subtitles = subs
+		}
 		return c
 	}
 	// awaitSubtitles runs once the stream is chosen. It lets the JSON responses
