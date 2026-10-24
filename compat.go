@@ -16,6 +16,8 @@ import (
 // after the new file is complete and readable; on any failure the original
 // stays as it is.
 //
+// Only when 進階設定「下載後轉成 H.264」is on (off by default: the format
+// choice already prefers H.264 at the same resolution, see h264FormatSort).
 // Skipped when the user picks the format (格式 ID mode, or -f / -x in 進階參數).
 
 // compatVideoCodecs are ffprobe codec names converted to H.264.
@@ -26,9 +28,45 @@ var compatAudioCodecs = map[string]bool{"aac": true, "mp3": true, "ac3": true, "
 
 const compatTempSuffix = ".h264-converting.mp4"
 
+// h264SortFields is yt-dlp's default format order with H.264 preferred as the
+// video codec: resolution, frame rate and HDR still win, so a 4K VP9/AV1 is
+// kept over a 1080p H.264. A site's AV1 copy can also be far slower to fetch
+// (rarely cached by its CDN) than the H.264 one of the same quality.
+const h264SortFields = "hasvid,ie_pref,lang,quality,res,fps,hdr:12,vcodec:h264"
+
+// h264FormatSort returns the -S option for the video modes, or nil when the
+// user's 進階參數 pick or sort the formats themselves.
+func h264FormatSort(mode int, extra string) []string {
+	if mode != 0 && mode != 2 && mode != 5 {
+		return nil
+	}
+	if userChoosesFormat(extra) || userSortsFormats(extra) {
+		return nil
+	}
+	if mode == 5 {
+		// yt-dlp's "res" is the short side: a portrait 720×1280 video is 720p.
+		return []string{"-S", "res:720," + strings.Replace(h264SortFields, "res,", "", 1)}
+	}
+	return []string{"-S", h264SortFields}
+}
+
+// userSortsFormats reports whether the user's 進階參數 set -S / --format-sort.
+func userSortsFormats(extra string) bool {
+	args, err := splitArgs(extra)
+	if err != nil {
+		return true
+	}
+	for _, a := range args {
+		if a == "-S" || a == "--format-sort" || strings.HasPrefix(a, "--format-sort=") || (strings.HasPrefix(a, "-S") && len(a) > 2) {
+			return true
+		}
+	}
+	return false
+}
+
 // needsCompatConvert reports whether a checked file should become H.264.
 func needsCompatConvert(path string, info mediaInfo, mode int, cfg settings) bool {
-	if mode != 0 && mode != 2 && mode != 5 {
+	if !cfg.ConvertH264 || (mode != 0 && mode != 2 && mode != 5) {
 		return false
 	}
 	if userChoosesFormat(cfg.ExtraArgs) {
@@ -92,6 +130,12 @@ func (a *app) makePlayable(ctx context.Context, files []string, infos []mediaInf
 			return
 		}
 		if !needsCompatConvert(f, infos[i], mode, cfg) {
+			if on := cfg; !cfg.ConvertH264 {
+				on.ConvertH264 = true
+				if needsCompatConvert(f, infos[i], mode, on) {
+					a.postLog("ℹ 影片編碼是 " + strings.ToUpper(infos[i].VideoCodec) + "（網站沒有同畫質的 H.264）；若播放器打不開，可在進階設定勾選「下載後轉成 H.264」。\r\n")
+				}
+			}
 			continue
 		}
 		if err := a.convertForPlayback(ctx, f, infos[i]); err != nil {

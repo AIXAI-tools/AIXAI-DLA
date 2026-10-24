@@ -18,6 +18,12 @@ Go libraries compiled into this program:
 - github.com/jchv/go-winloader (ISC)
 - golang.org/x/sys (BSD-3-Clause)
 
+Code included in this program:
+
+- ytdlp_plugins/aixai_fixes.py: a temporary yt-dlp extractor fix, written out and
+  loaded into yt-dlp only when needed. It contains code copied from yt-dlp pull
+  request #17898 (Unlicense): https://github.com/yt-dlp/yt-dlp/pull/17898
+
 Parts of the episode-page handling adapt the public endpoint and media-field
 handling implemented by the MIT-licensed tiktok-crawler project. Its notice:
 

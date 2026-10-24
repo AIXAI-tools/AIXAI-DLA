@@ -466,6 +466,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
             <div class="field checks">
               <label><input type="checkbox" id="noPlaylist"> 一般下載時避免誤抓整張播放清單</label>
               <label><input type="checkbox" id="playlistFolder"> 播放清單依名稱建立資料夾</label>
+              <label title="只有在播放器或裝置打不開 AV1／VP9 影片時才需要；轉檔會花較多時間"><input type="checkbox" id="convertH264"> 下載後轉成 H.264（給無法播放 AV1／VP9 的舊裝置）</label>
             </div>
             <div class="field">
               <label class="f" for="dataFolder">紀錄資料夾（下載紀錄、回報包）</label>
@@ -719,7 +720,7 @@ function collect(){
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
     seriesName:$("seriesName").value.trim(), episodeFormat:$("epFormat").value, episodeSep:$("epSep").value,
-    safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked,
+    safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked, convertH264:$("convertH264").checked,
     extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open,
     maxJobs:+$("maxJobs").value||0, dataFolder:$("dataFolder").value.trim()
   };
@@ -746,7 +747,7 @@ function episodeName(ep){
   if(!f) return `${name}_E${n}`;
   const sep=EP_SEPS[$("epSep").value]; return name+(sep==null?" ":sep)+f(n);
 }
-["mode","login","capBrowser","sequence","seqStart","seqEnd","epFormat","epSep","safe","noPlaylist","playlistFolder","extra","output","formatId","maxJobs"].forEach(id=>{
+["mode","login","capBrowser","sequence","seqStart","seqEnd","epFormat","epSep","safe","noPlaylist","playlistFolder","convertH264","extra","output","formatId","maxJobs"].forEach(id=>{
   $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
   $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
 });
@@ -775,7 +776,7 @@ function fillForm(init){
   $("sequence").checked=!!s.sequence; $("seqStart").value=s.sequence_start||1; $("seqEnd").value=s.sequence_end||50;
   $("epFormat").value=s.episode_format||""; if($("epFormat").selectedIndex<0) $("epFormat").value="";
   $("epSep").value=s.episode_sep||"space"; if($("epSep").selectedIndex<0) $("epSep").value="space";
-  $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder;
+  $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder; $("convertH264").checked=!!s.convert_h264;
   $("extra").value=s.extra_args||"";
   if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
   $("capBrowser").value=s.capture_browser||"default"; if($("capBrowser").selectedIndex<0) $("capBrowser").value="default";

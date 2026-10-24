@@ -323,6 +323,7 @@ type startRequest struct {
 	Safe           bool   `json:"safe"`
 	NoPlaylist     bool   `json:"noPlaylist"`
 	PlaylistFolder bool   `json:"playlistFolder"`
+	ConvertH264    bool   `json:"convertH264"`
 	ExtraArgs      string `json:"extraArgs"`
 	CookieBrowser  string `json:"cookieBrowser"`
 	CookieFile     string `json:"cookieFile"`
@@ -465,6 +466,7 @@ func (a *app) applyRequestToSettings(req startRequest) {
 	a.cfg.OutputFolder = strings.TrimSpace(req.Output)
 	a.cfg.NoPlaylist = req.NoPlaylist
 	a.cfg.PlaylistFolder = req.PlaylistFolder
+	a.cfg.ConvertH264 = req.ConvertH264
 	a.cfg.ExtraArgs = req.ExtraArgs
 	if req.CookieBrowser == "cookiefile" {
 		a.cfg.CookieBrowser = "auto"

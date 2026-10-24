@@ -1,0 +1,2 @@
+# The embedded yt-dlp plugin keeps LF so every build embeds the same bytes.
+ytdlp_plugins/*.py text eol=lf

@@ -164,6 +164,7 @@ func withInfoJSON(args []string, path string) []string {
 // readPageInfo asks yt-dlp for the page data only (no download).
 func (a *app) readPageInfo(ctx context.Context, rawURL string, cfg settings) (map[string]interface{}, error) {
 	args := []string{"--ignore-config", "--no-warnings", "--no-playlist", "-J", "--js-runtimes", "deno:" + a.denoPath}
+	args = append(args, a.ytDlpPluginArgs(rawURL)...)
 	if cookieFile := strings.TrimSpace(cfg.CookieFile); cookieFile != "" && validFile(cookieFile, 1) {
 		args = append(args, "--cookies", cookieFile)
 	}

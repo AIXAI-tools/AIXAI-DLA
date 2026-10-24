@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.16"
+	appVersion = "4.2.17"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -324,6 +324,9 @@ type settings struct {
 	// NoStartupUpdateCheck turns off the quiet update check at startup. Stored
 	// inverted so that settings files from older versions keep it enabled.
 	NoStartupUpdateCheck bool `json:"no_startup_update_check"`
+	// ConvertH264 re-encodes AV1/VP9 downloads to H.264 (compat.go); off by
+	// default since current players read AV1/VP9 and conversion is slow.
+	ConvertH264 bool `json:"convert_h264"`
 }
 
 type doneInfo struct {
@@ -3663,6 +3666,7 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		"--ffmpeg-location", a.binDir,
 		"--js-runtimes", "deno:" + a.denoPath,
 	}
+	args = append(args, a.ytDlpPluginArgs(rawURL)...)
 	if cookieFile := strings.TrimSpace(cfg.CookieFile); cookieFile != "" && validFile(cookieFile, 1) {
 		args = append(args, "--cookies", cookieFile)
 	} else if browser := strings.TrimSpace(cfg.CookieBrowser); browser != "" && browser != "auto" && browser != "none" {
@@ -3690,12 +3694,15 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 	}
 	args = append(args, extra...)
 
+	sorting := h264FormatSort(mode, cfg.ExtraArgs)
 	switch mode {
 	case 0:
+		args = append(args, sorting...)
 		args = append(args, "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
 	case 1:
 		args = append(args, "-x", "--audio-format", "mp3", "--audio-quality", "0", rawURL)
 	case 2:
+		args = append(args, sorting...)
 		args = append(args, "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
 	case 3:
 		args = append(args, "-F", rawURL)
@@ -3706,7 +3713,11 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		args = append(args, "-f", strings.TrimSpace(formatID), rawURL)
 	case 5:
 		// yt-dlp's "res" is the short side: a portrait 720×1280 video is 720p.
-		args = append(args, "-S", "res:720", "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
+		if len(sorting) == 0 {
+			sorting = []string{"-S", "res:720"}
+		}
+		args = append(args, sorting...)
+		args = append(args, "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
 	default:
 		args = append(args, rawURL)
 	}
