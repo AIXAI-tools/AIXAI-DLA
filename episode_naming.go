@@ -4,8 +4,10 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -108,6 +110,54 @@ func (a *app) customSequenceTemplate(cfg settings, dir string) string {
 		return strings.ReplaceAll(strings.TrimRight(s, " ."), "%", "%%") + label + ".%(ext)s"
 	}
 	return fmt.Sprintf("%%(title).%dB", t) + label + ".%(ext)s"
+}
+
+// sequenceTemplate is the yt-dlp output template of a 連續集數 item: the
+// user's naming when chosen; otherwise, for an episode page whose address
+// ends in a readable series name and the number (…/series-name/3), the name
+// page-data and capture downloads of the batch use (series-name_E003), so a
+// batch is named alike whichever way each episode was saved. "" keeps the
+// usual template.
+func (a *app) sequenceTemplate(rawURL string, cfg settings, dir string) string {
+	if t := a.customSequenceTemplate(cfg, dir); t != "" {
+		return t
+	}
+	if !cfg.Sequence {
+		return ""
+	}
+	series, ep := slugEpisode(rawURL)
+	if series == "" {
+		return ""
+	}
+	label := episodeNaming{}.label(ep)
+	series, _ = truncateUTF8(series, titleBudget(dir, len(label))+pathIDReserve)
+	return strings.ReplaceAll(strings.TrimRight(series, " ."), "%", "%%") + label + ".%(ext)s"
+}
+
+// slugEpisode returns the series segment and episode number of an address
+// such as …/series-name/3 or …/series-name/episode-3, or "" (a bare number
+// before the episode is no name).
+func slugEpisode(rawURL string) (string, int) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", 0
+	}
+	parts := strings.FieldsFunc(strings.Trim(u.Path, "/"), func(r rune) bool { return r == '/' })
+	if len(parts) < 2 || allDigits(parts[len(parts)-2]) {
+		return "", 0
+	}
+	series := safeWindowsBaseName(parts[len(parts)-2])
+	last := strings.ToLower(parts[len(parts)-1])
+	ep := 0
+	if m := captureEpisodeRE.FindStringSubmatch(last); len(m) > 1 {
+		ep, _ = strconv.Atoi(m[1])
+	} else if allDigits(last) && len(last) <= 4 {
+		ep, _ = strconv.Atoi(last)
+	}
+	if series == "" || ep <= 0 {
+		return "", 0
+	}
+	return series, ep
 }
 
 var (

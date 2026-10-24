@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.19"
+	appVersion = "4.2.20"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -654,6 +654,9 @@ var (
 	procEnableWindow                  = user32.NewProc("EnableWindow")
 	procSetWindowPos                  = user32.NewProc("SetWindowPos")
 	procGetWindowRect                 = user32.NewProc("GetWindowRect")
+	procGetWindowPlacement            = user32.NewProc("GetWindowPlacement")
+	procSetWindowPlacement            = user32.NewProc("SetWindowPlacement")
+	procIsIconic                      = user32.NewProc("IsIconic")
 	procRedrawWindow                  = user32.NewProc("RedrawWindow")
 	procSetForegroundWindow           = user32.NewProc("SetForegroundWindow")
 	procAllowSetForegroundWindow      = user32.NewProc("AllowSetForegroundWindow")
@@ -1409,10 +1412,29 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				a.postLog("⚠ 使用登入狀態仍無法下載：" + firstLine(loginErr.Error()) + "\r\n")
 			}
 		}
+		// The site did not answer in time while serving the page (some sites
+		// are slow at times): wait a moment and ask once more; if it still
+		// does not answer, the fallback chain reads the page its own way.
+		pageTimeout := false
+		if err != nil && !a.stopRequested.Load() && site == "" && isPageTimeout(err) {
+			a.postLog("⚠ 網站回應逾時，等 5 秒後再試一次。\r\n")
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+			if retryArgs, buildErr := a.buildArgs(rawURL, mode, formatID, output, cfg); buildErr == nil && !a.stopRequested.Load() {
+				err = a.runCommand(ctx, retryArgs)
+				a.diagRecord("逾時後重試", err)
+			}
+			pageTimeout = isPageTimeout(err)
+		}
 		// A site yt-dlp knows but whose page it could not read this time (one
 		// video of the site, or after a site change) gets the same fallback
 		// chain; the site itself stays marked as supported for later items.
-		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && (isExtractorFailure(err) || antiBot || isGenericForbidden(err)) {
+		// The generic extractor may also find a media address in the page
+		// that has since been refused (an expired signed address).
+		genericRefused := a.lastYtGeneric && isHTTPForbidden(err)
+		if err != nil && !a.stopRequested.Load() && site == "" && !isUnsupportedURL(err) && (isExtractorFailure(err) || antiBot || isGenericForbidden(err) || genericRefused || pageTimeout) {
 			a.postLog("⚠ yt-dlp 無法解析此頁面，改用 AIXAI 多引擎備援流程。\r\n")
 			a.postStatus("狀態：yt-dlp 無法解析此頁面，正在嘗試備援解析…")
 			if fallbackErr := a.runUnsupportedFallback(ctx, rawURL, mode, formatID, output, cfg); fallbackErr == nil {
@@ -1581,6 +1603,16 @@ func isAntiBotChallenge(err error) bool {
 // isGenericForbidden: yt-dlp's generic extractor found a media link in the
 // page but the media server refused it (e.g. the page held an expired
 // signed link); the page's own player may still get a working one.
+// isPageTimeout: yt-dlp gave up waiting for the web page itself (not for the
+// media transfer).
+func isPageTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "unable to download webpage") && (strings.Contains(lower, "timed out") || strings.Contains(lower, "timeout"))
+}
+
 func isGenericForbidden(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "[generic]") && isHTTPForbidden(err)
 }
@@ -3692,7 +3724,7 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		single, playlist := outputTemplates(output)
 		if collection && cfg.PlaylistFolder {
 			args = append(args, "-o", playlist)
-		} else if custom := a.customSequenceTemplate(cfg, output); custom != "" && !collection {
+		} else if custom := a.sequenceTemplate(rawURL, cfg, output); custom != "" && !collection {
 			args = append(args, "-o", custom)
 		} else {
 			args = append(args, "-o", single)

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -188,5 +189,46 @@ func TestGroupJobsBySite(t *testing.T) {
 	}
 	if ids := jobIDs(groupJobsBySite(jobs)); ids != "136254" {
 		t.Fatalf("order = %s", ids)
+	}
+}
+
+func TestSequenceTemplateUsesAddressSeriesName(t *testing.T) {
+	cfg := settings{Sequence: true, SequenceStart: 1, SequenceEnd: 4}
+	a := &app{cfg: cfg}
+	if got := a.sequenceTemplate("https://x/detail/watch/my-show/3?lang=en-US", cfg, `C:\Videos`); got != "my-show_E003.%(ext)s" {
+		t.Errorf("slug template = %q", got)
+	}
+	if got := a.sequenceTemplate("https://x/series/my-show/episode-12", cfg, `C:\Videos`); got != "my-show_E012.%(ext)s" {
+		t.Errorf("episode-N template = %q", got)
+	}
+	// A bare number before the episode is no name: keep the usual template.
+	if got := a.sequenceTemplate("https://x/play/16465/3", cfg, `C:\Videos`); got != "" {
+		t.Errorf("numeric series = %q", got)
+	}
+	// The user's naming wins.
+	cfg.SeriesName, cfg.EpisodeFormat, cfg.EpisodeSep = "劇", "EP", "space"
+	a.cfg = cfg
+	if got := a.sequenceTemplate("https://x/detail/watch/my-show/3", cfg, `C:\Videos`); !strings.HasPrefix(got, "劇 EP") {
+		t.Errorf("custom naming = %q", got)
+	}
+	// Not a sequence batch: unchanged.
+	if got := a.sequenceTemplate("https://x/detail/watch/my-show/3", settings{}, `C:\Videos`); got != "" {
+		t.Errorf("not a sequence = %q", got)
+	}
+}
+
+func TestFetchableSubtitlesDropsPageOnlyAddresses(t *testing.T) {
+	got := fetchableSubtitles([]pageSubtitle{{URL: "blob:https://x/abc"}, {URL: "https://x/a.vtt"}, {URL: "data:text/vtt,WEBVTT"}})
+	if len(got) != 1 || got[0].URL != "https://x/a.vtt" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestIsPageTimeout(t *testing.T) {
+	if !isPageTimeout(errors.New("ERROR: [generic] 4?lang=en-US: Unable to download webpage: HTTPSConnectionPool(host='x', port=443): Read timed out. (read timeout=20.0)")) {
+		t.Error("page timeout not recognised")
+	}
+	if isPageTimeout(errors.New("ERROR: unable to download video data: Read timed out")) {
+		t.Error("media timeout taken for a page timeout")
 	}
 }

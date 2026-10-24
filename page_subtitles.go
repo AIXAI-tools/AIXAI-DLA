@@ -284,6 +284,7 @@ func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep in
 // saveSubtitles fetches subs and saves them next to each video file in videos
 // (audio files are skipped).
 func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL string, videos []string, cfg settings) {
+	subs = fetchableSubtitles(subs)
 	if len(subs) == 0 {
 		return
 	}
@@ -343,6 +344,19 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 	if saved > 0 {
 		a.diagNote(fmt.Sprintf("外掛字幕 ✓ %d 個", saved))
 	}
+}
+
+// fetchableSubtitles drops subtitles that only exist inside the page (blob:
+// and data: addresses the player made from a file it already loaded; that
+// file is listed separately).
+func fetchableSubtitles(subs []pageSubtitle) []pageSubtitle {
+	var out []pageSubtitle
+	for _, s := range subs {
+		if u, err := url.Parse(s.URL); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Pages that build their player with scripts (the browser-capture path) do

@@ -44,6 +44,8 @@ type cdpBrowser struct {
 	// windowID identifies the browser window for Browser.setWindowBounds.
 	windowID int
 	visible  bool
+	// scale is the display scaling, for the window size on screen.
+	scale float64
 }
 
 // Background mode: the capture browser works out of the user's way (minimised,
@@ -62,6 +64,73 @@ func (b *cdpBrowser) hide() {
 	b.setFocusEmulation(true)
 	b.setWindowState("minimized")
 	b.visible = false
+	b.setRestorePlacement()
+}
+
+// followUserRestore notices the user bringing the minimised window back from
+// the taskbar on their own (before the capture shows it) and stops the focus
+// emulation, as reveal does, so the page sees where the user really is.
+func (b *cdpBrowser) followUserRestore() {
+	if b.visible || b.cmd == nil || b.cmd.Process == nil {
+		return
+	}
+	for _, hw := range browserTopWindows(uint32(b.cmd.Process.Pid)) {
+		if iconic, _, _ := procIsIconic.Call(hw); iconic == 0 {
+			b.visible = true
+			b.setFocusEmulation(false)
+			return
+		}
+	}
+}
+
+// windowPlacement is the Win32 WINDOWPLACEMENT structure.
+type windowPlacement struct {
+	Length         uint32
+	Flags          uint32
+	ShowCmd        uint32
+	MinPosition    point
+	MaxPosition    point
+	NormalPosition rect
+}
+
+const swShowMinNoActive = 7
+
+// setRestorePlacement makes the minimised window come back centred on the
+// work area when the user restores it from the taskbar. It starts off screen
+// (--window-position), and restored there it could be seen in the taskbar
+// preview but not reached.
+func (b *cdpBrowser) setRestorePlacement() {
+	if b.cmd == nil || b.cmd.Process == nil {
+		return
+	}
+	scale := b.scale
+	if scale <= 0 {
+		scale = 1
+	}
+	var work rect
+	procSystemParametersInfoW.Call(SPI_GETWORKAREA, 0, uintptr(unsafe.Pointer(&work)), 0)
+	// The normal position is in work-area coordinates.
+	areaW, areaH := work.Right-work.Left, work.Bottom-work.Top
+	ww, wh := int32(1180*scale), int32(820*scale)
+	if ww > areaW {
+		ww = areaW
+	}
+	if wh > areaH {
+		wh = areaH
+	}
+	left, top := (areaW-ww)/2, (areaH-wh)/2
+	for _, hw := range browserTopWindows(uint32(b.cmd.Process.Pid)) {
+		wp := windowPlacement{Length: uint32(unsafe.Sizeof(windowPlacement{}))}
+		if ok, _, _ := procGetWindowPlacement.Call(hw, uintptr(unsafe.Pointer(&wp))); ok == 0 {
+			continue
+		}
+		if n := wp.NormalPosition; n.Left >= 0 && n.Top >= 0 && n.Right <= areaW && n.Bottom <= areaH {
+			continue
+		}
+		wp.NormalPosition = rect{left, top, left + ww, top + wh}
+		wp.ShowCmd = swShowMinNoActive
+		procSetWindowPlacement.Call(hw, uintptr(unsafe.Pointer(&wp)))
+	}
 }
 
 // setFocusEmulation makes the page act focused and visible even while
@@ -301,7 +370,7 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("啟動 %s DevTools 媒體監聽失敗：%w", browserName, err)
 	}
-	b := &cdpBrowser{name: browserName, cmd: cmd, conn: conn, exited: make(chan struct{}), readerDone: make(chan struct{}), nextID: 1, pending: map[int]chan cdpWireMessage{}}
+	b := &cdpBrowser{name: browserName, cmd: cmd, conn: conn, exited: make(chan struct{}), readerDone: make(chan struct{}), nextID: 1, pending: map[int]chan cdpWireMessage{}, scale: a.scale}
 	go func() {
 		_ = cmd.Wait()
 		close(b.exited)
@@ -1043,6 +1112,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			if !isTikTokDrama {
 				go checkAdVideos()
 			}
+			b.followUserRestore()
 		case <-hint.C:
 			if !isTikTokDrama && !reloaded && (best.URL == "" || onlyStatic()) {
 				// Usually the site was just slow: reload the page once before
