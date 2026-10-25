@@ -97,6 +97,9 @@ func (a *app) pickFolder(current string) string {
 
 // openFileDialog shows the standard Open dialog; multi returns every selection.
 func (a *app) openFileDialog(title, initialDir string, multi bool, filterPairs ...string) []string {
+	if files, ok := comOpenFileDialog(a.hwnd, title, initialDir, multi, filterPairs...); ok {
+		return files
+	}
 	fileBuf := make([]uint16, 65536)
 	filter := multiString(filterPairs...)
 	var initialPtr *uint16
