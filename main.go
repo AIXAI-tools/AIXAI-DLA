@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.22"
+	appVersion = "4.2.23"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -593,6 +593,9 @@ type app struct {
 	// lastYtGeneric: the latest yt-dlp run used its generic (any web page)
 	// extractor, so its result is a guess and is checked strictly.
 	lastYtGeneric bool
+	// lastYtErrors sorts the error lines of the latest yt-dlp run
+	// (playlist_skips.go).
+	lastYtErrors ytRunErrors
 	// outputs are the media files written by the current download step, for
 	// the media check (media_check.go). seqHashes (sequence batches only)
 	// maps each checked file's SHA-256 to the item that saved it; curItem is
@@ -1241,7 +1244,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 			if buildErr != nil {
 				return buildErr
 			}
-			err = a.runCommand(ctx, args)
+			err = a.acceptPlaylistSkips(a.runCommand(ctx, args))
 			a.diagRecord("yt-dlp", err)
 		}
 		if err != nil && safe && isBlockSignal(err) && !a.stopRequested.Load() {
@@ -1290,7 +1293,7 @@ func (a *app) runURLs(ctx context.Context, urls []string, mode int, formatID, ou
 				retryArgs = insertBeforeLast(retryArgs, "--http-chunk-size", transferDropChunk)
 			}
 			a.postStatus(fmt.Sprintf("狀態：環境檢查完成，正在重試第 %d/%d 個網址…", i+1, len(urls)))
-			retryErr := a.runCommand(ctx, retryArgs)
+			retryErr := a.acceptPlaylistSkips(a.runCommand(ctx, retryArgs))
 			a.diagRecord("yt-dlp 重試（檢查環境後）", retryErr)
 			if retryErr == nil {
 				a.postLog("✓ 更新／檢查環境後，自動重試成功。\r\n")
@@ -4004,6 +4007,7 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	if isYtDlp {
 		a.lastYtArgs = append([]string(nil), args...)
 		a.lastYtGeneric = false
+		a.lastYtErrors = ytRunErrors{}
 	}
 	reader := bufio.NewReaderSize(pr, 64*1024)
 	var readErr error
@@ -4024,6 +4028,9 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 				if strings.HasPrefix(strings.TrimSpace(line), "[generic]") {
 					a.lastYtGeneric = true
 				}
+			}
+			if isYtDlp {
+				a.lastYtErrors.observe(line)
 			}
 			displayLine := strings.ReplaceAll(strings.ReplaceAll(line, "\r\n", "\n"), "\n", "\r\n")
 			a.postLog(displayLine)
@@ -4050,8 +4057,16 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 		return errStopped
 	}
 	if err != nil {
+		runErr := &commandRunError{Cause: err, Summary: summarizeCommandOutputForEngine(outputTail, err, engine)}
+		if isYtDlp && readErr == nil && a.lastYtErrors.onlyUnavailable() && len(a.lastYtFiles) > 0 {
+			// The saved videos are kept for the media check (acceptPlaylistSkips).
+			for _, f := range a.lastYtFiles {
+				a.noteOutput(f)
+			}
+			return runErr
+		}
 		a.lastYtArgs, a.lastYtFiles = nil, nil
-		return &commandRunError{Cause: err, Summary: summarizeCommandOutputForEngine(outputTail, err, engine)}
+		return runErr
 	}
 	if readErr != nil {
 		return &commandRunError{Cause: readErr, Summary: "讀取 " + engine + " 執行訊息失敗：" + readErr.Error()}
