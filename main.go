@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.20"
+	appVersion = "4.2.21"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -701,6 +701,7 @@ func main() {
 	// unpumped and causing intermittent "(沒有回應)" freezes.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	installForeignContinueHandler()
 
 	if runtime.GOARCH != "amd64" {
 		// This binary is currently distributed for Windows x64.
