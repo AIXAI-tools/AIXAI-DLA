@@ -273,6 +273,17 @@ func runLogHasFailure(path string) bool {
 // failure, also the newest run log that does: a report is usually about a
 // failure, while the newest log may belong to another task still running.
 func (a *app) latestFeedbackLogs() []feedbackLog {
+	out := a.latestRunFeedbackLogs()
+	// 最近一週有程式沒正常關閉的紀錄時一併附上（crash_record.go）
+	if p := a.recentCrashLog(); p != "" {
+		if l, err := a.attachFeedbackLog(p); err == nil {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func (a *app) latestRunFeedbackLogs() []feedbackLog {
 	files := a.runLogFiles()
 	var out []feedbackLog
 	newest := ""

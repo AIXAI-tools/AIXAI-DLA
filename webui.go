@@ -240,9 +240,11 @@ func (a *app) runWebUI() error {
 	a.subclassWindow()
 	a.bindUI()
 	a.cleanupAfterUpdate()
+	a.startSessionRecord()
 	w.SetHtml(uiHTML)
 	w.Run()
 	a.beginShutdown()
+	a.endSessionRecord()
 	return nil
 }
 

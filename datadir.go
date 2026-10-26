@@ -63,8 +63,15 @@ func utf16PtrToString(p *uint16) string {
 	return syscall.UTF16ToString(buf)
 }
 
+// testDataRoot replaces the Documents folder in unit tests (TestMain), so
+// tests never write into the real data folder.
+var testDataRoot string
+
 // defaultDataFolder is used while settings.DataFolder is empty.
 func defaultDataFolder() string {
+	if testDataRoot != "" {
+		return filepath.Join(testDataRoot, dataFolderName)
+	}
 	if docs := documentsFolder(); docs != "" {
 		return filepath.Join(docs, dataFolderName)
 	}
