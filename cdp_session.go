@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -32,8 +33,15 @@ type cdpBrowser struct {
 	nextID  int
 	pending map[int]chan cdpWireMessage
 
+	// sessMu guards sessionID and targetID, which change when the capture
+	// tab is replaced (see reopenTab).
+	sessMu    sync.Mutex
 	sessionID string
 	targetID  string
+	// networkEvents counts the capture tab's Network events; detached is set
+	// when the browser drops the tab's session (the tab was closed).
+	networkEvents atomic.Int64
+	detached      atomic.Bool
 
 	// handler receives page events for the capture currently in progress.
 	handlerMu sync.Mutex
@@ -138,7 +146,7 @@ func (b *cdpBrowser) setRestorePlacement() {
 // the user acts in the window, so pages that check the window really lost
 // focus (e.g. while an ad opened in another tab) see what actually happens.
 func (b *cdpBrowser) setFocusEmulation(on bool) {
-	if b.sessionID == "" {
+	if b.session() == "" {
 		return
 	}
 	_ = b.send("Emulation.setFocusEmulationEnabled", map[string]interface{}{"enabled": on})
@@ -230,7 +238,7 @@ func (b *cdpBrowser) browserCall(method string, params map[string]interface{}) (
 
 // sendWithReply sends a command to the attached page session.
 func (b *cdpBrowser) sendWithReply(method string, params map[string]interface{}) (chan cdpWireMessage, error) {
-	return b.rawCall(method, params, b.sessionID)
+	return b.rawCall(method, params, b.session())
 }
 
 // pageCall sends a page-session command and waits for its reply.
@@ -264,7 +272,7 @@ func (b *cdpBrowser) setHandler(h func(cdpWireMessage)) {
 // pageTitle is the capture tab's title, or "" when the page has none (the tab
 // then shows its address).
 func (b *cdpBrowser) pageTitle() string {
-	reply, err := b.browserCall("Target.getTargetInfo", map[string]interface{}{"targetId": b.targetID})
+	reply, err := b.browserCall("Target.getTargetInfo", map[string]interface{}{"targetId": b.target()})
 	if err != nil {
 		return ""
 	}
@@ -297,7 +305,7 @@ func (b *cdpBrowser) pageTargets() []string {
 func (b *cdpBrowser) closeOtherPages() int {
 	closed := 0
 	for _, id := range b.pageTargets() {
-		if id != "" && id != b.targetID {
+		if id != "" && id != b.target() {
 			if _, err := b.browserCall("Target.closeTarget", map[string]interface{}{"targetId": id}); err == nil {
 				closed++
 			}
@@ -316,7 +324,7 @@ func (b *cdpBrowser) navigateBlank() {
 // after a clean exit), then shuts the browser down cleanly so the profile and
 // a one-time TikTok login are flushed before the process tree is cleaned up.
 func (b *cdpBrowser) close() {
-	if b.alive() && b.sessionID != "" {
+	if b.alive() && b.session() != "" {
 		b.navigateBlank()
 		b.closeOtherPages()
 		time.Sleep(300 * time.Millisecond)
@@ -398,8 +406,17 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 				}
 				continue
 			}
-			if msg.SessionID == "" || msg.SessionID != b.sessionID {
+			if msg.SessionID == "" {
+				if msg.Method == "Target.detachedFromTarget" && cdpString(msg.Params, "sessionId") == b.session() {
+					b.detached.Store(true)
+				}
 				continue
+			}
+			if msg.SessionID != b.session() {
+				continue
+			}
+			if strings.HasPrefix(msg.Method, "Network.") {
+				b.networkEvents.Add(1)
 			}
 			b.handlerMu.Lock()
 			h := b.handler
@@ -418,10 +435,11 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	a.postStatus("狀態：正在建立瀏覽器網路監聽…")
 
 	// Find the tab to drive and attach to it with a flattened session.
+	var firstTab string
 	waitTarget := time.Now().Add(12 * time.Second)
-	for b.targetID == "" && time.Now().Before(waitTarget) {
+	for firstTab == "" && time.Now().Before(waitTarget) {
 		if ids := b.pageTargets(); len(ids) > 0 {
-			b.targetID = ids[0]
+			firstTab = ids[0]
 			break
 		}
 		select {
@@ -432,16 +450,11 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	if b.targetID == "" {
+	if firstTab == "" {
 		return fail(errors.New("瀏覽器已啟動，但找不到可用的分頁"))
 	}
-	attach, err := b.browserCall("Target.attachToTarget", map[string]interface{}{"targetId": b.targetID, "flatten": true})
-	if err != nil {
-		return fail(fmt.Errorf("連接瀏覽器分頁失敗：%w", err))
-	}
-	b.sessionID = cdpString(attach.Result, "sessionId")
-	if b.sessionID == "" {
-		return fail(errors.New("連接瀏覽器分頁失敗：沒有取得 DevTools session"))
+	if err := b.attachTab(firstTab); err != nil {
+		return fail(err)
 	}
 	// Close leftover tabs now and again shortly after, since restored tabs can
 	// appear a few seconds after the first one.
@@ -455,8 +468,40 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 			}
 		})
 	}
+	b.hide()
+	a.postLog("✓ 嗅探瀏覽器在背景執行（已最小化，不會搶走您的滑鼠與鍵盤）；只有需要您登入或操作時才會顯示。\r\n")
+	return b, nil
+}
+
+func (b *cdpBrowser) session() string {
+	b.sessMu.Lock()
+	defer b.sessMu.Unlock()
+	return b.sessionID
+}
+
+func (b *cdpBrowser) target() string {
+	b.sessMu.Lock()
+	defer b.sessMu.Unlock()
+	return b.targetID
+}
+
+// attachTab makes a tab the capture tab: attaches a flattened session to it
+// and turns on what every capture needs.
+func (b *cdpBrowser) attachTab(targetID string) error {
+	attach, err := b.browserCall("Target.attachToTarget", map[string]interface{}{"targetId": targetID, "flatten": true})
+	if err != nil {
+		return fmt.Errorf("連接瀏覽器分頁失敗：%w", err)
+	}
+	sessionID := cdpString(attach.Result, "sessionId")
+	if sessionID == "" {
+		return errors.New("連接瀏覽器分頁失敗：沒有取得 DevTools session")
+	}
+	b.sessMu.Lock()
+	b.sessionID, b.targetID = sessionID, targetID
+	b.sessMu.Unlock()
+	b.detached.Store(false)
 	if err := b.send("Network.enable", map[string]interface{}{"maxResourceBufferSize": 32 << 20, "maxTotalBufferSize": 128 << 20}); err != nil {
-		return fail(err)
+		return err
 	}
 	_ = b.send("Network.setCacheDisabled", map[string]interface{}{"cacheDisabled": true})
 	_ = b.send("Page.enable", nil)
@@ -464,12 +509,71 @@ func (a *app) startCaptureBrowser(ctx context.Context) (*cdpBrowser, error) {
 	// (Runtime.evaluate works without it), and anti-bot checks detect it and
 	// then keep repeating their "verify you are human" step.
 	_ = b.send("Page.addScriptToEvaluateOnNewDocument", map[string]interface{}{"source": cdpAutoplayScript()})
-	if win, err := b.browserCall("Browser.getWindowForTarget", map[string]interface{}{"targetId": b.targetID}); err == nil {
+	if win, err := b.browserCall("Browser.getWindowForTarget", map[string]interface{}{"targetId": targetID}); err == nil {
 		b.windowID = int(cdpFloat(win.Result, "windowId"))
 	}
-	b.hide()
-	a.postLog("✓ 嗅探瀏覽器在背景執行（已最小化，不會搶走您的滑鼠與鍵盤）；只有需要您登入或操作時才會顯示。\r\n")
-	return b, nil
+	return nil
+}
+
+// reopenTab replaces the capture tab with a new one, for a tab that was
+// closed or that loads pages without the capture seeing any of its traffic.
+func (b *cdpBrowser) reopenTab() error {
+	old := b.target()
+	// background: a new active tab would bring the minimised window on screen.
+	created, err := b.browserCall("Target.createTarget", map[string]interface{}{"url": "about:blank", "background": true})
+	if err != nil {
+		return fmt.Errorf("開新分頁失敗：%w", err)
+	}
+	id := cdpString(created.Result, "targetId")
+	if id == "" {
+		return errors.New("開新分頁失敗：瀏覽器沒有回傳分頁")
+	}
+	if err := b.attachTab(id); err != nil {
+		return err
+	}
+	if old != "" && old != id {
+		_, _ = b.browserCall("Target.closeTarget", map[string]interface{}{"targetId": old})
+	}
+	if !b.visible {
+		b.hide()
+	}
+	return nil
+}
+
+// tabSummary lists the browser's tabs (site names only) for the diagnostics.
+func (b *cdpBrowser) tabSummary() string {
+	reply, err := b.browserCall("Target.getTargets", nil)
+	if err != nil {
+		return "無法列出分頁：" + err.Error()
+	}
+	infos, _ := reply.Result["targetInfos"].([]interface{})
+	current := b.target()
+	var parts []string
+	for _, raw := range infos {
+		info, _ := raw.(map[string]interface{})
+		kind := cdpString(info, "type")
+		if strings.HasSuffix(kind, "worker") {
+			continue
+		}
+		where := hostOnly(cdpString(info, "url"))
+		if where == "" {
+			where = cdpString(info, "url")
+		}
+		if sub := cdpString(info, "subtype"); sub != "" {
+			kind += "/" + sub
+		}
+		item := kind + " " + where
+		if cdpString(info, "targetId") == current {
+			item += "（擷取中）"
+		}
+		if len(parts) < 8 {
+			parts = append(parts, item)
+		}
+	}
+	if len(parts) == 0 {
+		return "沒有分頁"
+	}
+	return strings.Join(parts, "、")
 }
 
 // captureBrowser returns the task's shared capture browser, starting it if
@@ -595,6 +699,12 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	b, err := a.captureBrowser(ctx)
 	if err != nil {
 		return browserMediaCandidate{}, err
+	}
+	if b.detached.Load() {
+		a.postLog("ℹ 擷取用的分頁已被關閉，改開一個新分頁。\r\n")
+		if err := b.reopenTab(); err != nil {
+			return browserMediaCandidate{}, err
+		}
 	}
 	_, tiktokEpisode, isTikTokDrama := parseTikTokShortDramaURL(rawURL)
 	pageEpisode := pageEpisodeNumber(rawURL)
@@ -1018,6 +1128,12 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			a.postLog(fmt.Sprintf("✓ 已從 cookies.txt 匯入 %d 個 %s 的登入 Cookie 到嗅探瀏覽器。\r\n", len(cookies), hostOnly(rawURL)))
 		}
 	}
+	if captureNavigateHook != nil {
+		captureNavigateHook(b)
+	}
+	// A page load always shows network traffic within seconds; none at all
+	// means the capture is attached to a tab that is not the one loading.
+	navEvents := b.networkEvents.Load()
 	if err := b.send("Page.navigate", map[string]interface{}{"url": rawURL}); err != nil {
 		return browserMediaCandidate{}, err
 	}
@@ -1038,6 +1154,9 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	defer hint.Stop()
 	adCheck := time.NewTicker(1500 * time.Millisecond)
 	defer adCheck.Stop()
+	silentCheck := time.NewTimer(12 * time.Second)
+	defer silentCheck.Stop()
+	reopened := false
 	// userWait is set once the window was shown for the user to act in (press
 	// play, close an ad, finish a check); the capture then waits longer.
 	userWait := false
@@ -1113,6 +1232,21 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				go checkAdVideos()
 			}
 			b.followUserRestore()
+		case <-silentCheck.C:
+			if reopened || b.networkEvents.Load() != navEvents {
+				continue
+			}
+			reopened = true
+			tabs := b.tabSummary()
+			a.postLog("⚠ 擷取用的分頁 12 秒內沒有任何網路活動，改開一個新分頁重新載入（當時的分頁：" + tabs + "）。\r\n")
+			a.diagNote("擷取分頁沒有網路活動，已改開新分頁；當時的分頁：" + tabs)
+			if err := b.reopenTab(); err != nil {
+				return browserMediaCandidate{}, fmt.Errorf("擷取用的分頁沒有回應，開新分頁也失敗：%w", err)
+			}
+			navEvents = b.networkEvents.Load()
+			if err := b.send("Page.navigate", map[string]interface{}{"url": rawURL}); err != nil {
+				return browserMediaCandidate{}, err
+			}
 		case <-hint.C:
 			if !isTikTokDrama && !reloaded && (best.URL == "" || onlyStatic()) {
 				// Usually the site was just slow: reload the page once before
@@ -1272,6 +1406,10 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			if best.URL != "" && !isAd(best.URL) {
 				awaitSubtitles()
 				return finish(best), nil
+			}
+			if b.networkEvents.Load() == navEvents {
+				a.diagNote("擷取分頁：" + b.tabSummary())
+				return browserMediaCandidate{}, errors.New("擷取用的瀏覽器分頁沒有任何網路活動（程式看不到頁面載入）；請關閉擷取用的瀏覽器視窗後重試，程式會重新開啟")
 			}
 			if isTikTokDrama {
 				summary := tikDiag.summary(tiktokEpisode)
