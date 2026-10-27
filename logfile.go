@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -187,7 +188,13 @@ func (a *app) logTaskHeader(urls []string, mode int, formatID string, cfg settin
 	if strings.TrimSpace(cfg.CookieFile) != "" {
 		b.WriteString("Cookie 檔：已指定（內容不記錄）\r\n")
 	}
-	if cfg.Sequence {
+	if cfg.Sequence && len(cfg.Episodes) > 0 {
+		eps := make([]string, len(cfg.Episodes))
+		for i, ep := range cfg.Episodes {
+			eps[i] = strconv.Itoa(ep)
+		}
+		b.WriteString("連續序號：重試第 " + strings.Join(eps, "、") + " 集\r\n")
+	} else if cfg.Sequence {
 		b.WriteString(fmt.Sprintf("連續序號：%d ～ %d\r\n", cfg.SequenceStart, cfg.SequenceEnd))
 	}
 	b.WriteString(fmt.Sprintf("網址（共 %d 個）：\r\n", len(urls)))

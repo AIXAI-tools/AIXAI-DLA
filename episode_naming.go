@@ -77,12 +77,26 @@ func namingFor(cfg settings) episodeNaming {
 // sequenceEpisode is the number 連續集數 gave the current item (0 outside a
 // sequence batch). Several addresses expand to one run of numbers each.
 func (a *app) sequenceEpisode() int {
-	cfg := a.cfg
-	if !cfg.Sequence || cfg.SequenceStart <= 0 || cfg.SequenceEnd < cfg.SequenceStart {
+	return sequenceEpisodeAt(a.cfg, a.itemOffset+a.curItem)
+}
+
+// sequenceEpisodeAt is the number 連續集數 gave item index (0-based, whole
+// task) of a batch run with cfg, or 0.
+func sequenceEpisodeAt(cfg settings, index int) int {
+	if !cfg.Sequence || index < 0 {
+		return 0
+	}
+	if len(cfg.Episodes) > 0 {
+		if index < len(cfg.Episodes) {
+			return cfg.Episodes[index]
+		}
+		return 0
+	}
+	if cfg.SequenceStart <= 0 || cfg.SequenceEnd < cfg.SequenceStart {
 		return 0
 	}
 	count := cfg.SequenceEnd - cfg.SequenceStart + 1
-	return cfg.SequenceStart + (a.itemOffset+a.curItem)%count
+	return cfg.SequenceStart + index%count
 }
 
 // outputBase names a page or capture download of rawURL with the batch's

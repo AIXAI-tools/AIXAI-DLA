@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -159,6 +160,7 @@ func (a *app) retryFailed(ids []int) string {
 	type group struct {
 		first failedEntry
 		urls  []string
+		eps   []int // each address's 連續集數 number (0 when unknown)
 	}
 	var groups []*group
 	byKey := map[string]*group{}
@@ -175,6 +177,7 @@ func (a *app) retryFailed(ids []int) string {
 			groups = append(groups, g)
 		}
 		g.urls = append(g.urls, e.URL)
+		g.eps = append(g.eps, sequenceEpisodeAt(e.Cfg, e.Item-1))
 	}
 	a.failedMu.Unlock()
 	if len(groups) == 0 {
@@ -183,8 +186,14 @@ func (a *app) retryFailed(ids []int) string {
 	for _, g := range groups {
 		cfg := g.first.Cfg
 		// Each address is retried as it is; a sequence range was already
-		// expanded into these addresses.
-		cfg.Sequence = false
+		// expanded into these addresses. A 連續集數 task keeps its naming,
+		// with each address's own episode number.
+		cfg.Episodes = nil
+		if cfg.Sequence && !slices.Contains(g.eps, 0) {
+			cfg.Episodes = g.eps
+		} else {
+			cfg.Sequence = false
+		}
 		a.addJob(g.urls, g.first.Mode, g.first.FormatID, g.first.Output, cfg,
 			[]string{"ℹ 重試「無法下載的網址」清單中的項目。\r\n"})
 	}

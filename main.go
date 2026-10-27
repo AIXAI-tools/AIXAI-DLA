@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.25"
+	appVersion = "4.2.26"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -309,6 +309,10 @@ type settings struct {
 	EpisodeFormat string `json:"episode_format,omitempty"`
 	EpisodeSep    string `json:"episode_sep,omitempty"`
 	SeriesName    string `json:"series_name,omitempty"`
+	// Episodes numbers each item of a retried 連續集數 task (failed.go): the
+	// retried addresses are no longer one run from SequenceStart. Per task
+	// only, like SeriesName.
+	Episodes []int `json:"episodes,omitempty"`
 	// UnsafeMode turns 帳號安全模式 off. Stored inverted so that settings files
 	// written by older versions (without the key) get safety mode enabled.
 	UnsafeMode bool `json:"unsafe_mode"`
