@@ -320,6 +320,7 @@ type startRequest struct {
 	SequenceStart  int    `json:"sequenceStart"`
 	SequenceEnd    int    `json:"sequenceEnd"`
 	SeriesName     string `json:"seriesName"`
+	FileName       string `json:"fileName"`
 	EpisodeFormat  string `json:"episodeFormat"`
 	EpisodeSep     string `json:"episodeSep"`
 	Safe           bool   `json:"safe"`
@@ -406,6 +407,7 @@ func (a *app) bindUI() {
 		a.applyRequestToSettings(req)
 		a.saveSettings()
 	})
+	_ = w.Bind("goClipboardText", func() string { return readClipboardText() })
 	_ = w.Bind("goPickFolder", func(current string) string { return a.pickFolder(current) })
 	_ = w.Bind("goPickCookieFile", func() string { return a.pickCookieFile() })
 	_ = w.Bind("goPickResumeFile", func(current string) string { return a.pickResumeFile(current) })
@@ -569,6 +571,19 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		return startResponse{Error: "請選擇 Cookie 檔，或改用其他登入方式。", Field: "cookieFile"}
 	}
 
+	fileName := ""
+	if !req.Sequence && strings.TrimSpace(req.FileName) != "" {
+		if len(urls) > 1 {
+			return startResponse{Error: "自訂檔名只能用在單一網址；要一次下載多個網址，請先清空檔名。", Field: "fileName"}
+		}
+		if req.Mode == 2 || isCollectionURL(urls[0]) {
+			return startResponse{Error: "播放清單會下載多部影片，不能自訂檔名；請先清空檔名。", Field: "fileName"}
+		}
+		if fileName = customFileName(req.FileName, output); fileName == "" {
+			return startResponse{Error: "檔名不能只有符號或空白，請重新輸入。", Field: "fileName"}
+		}
+	}
+
 	a.applyRequestToSettings(req)
 	a.saveSettings()
 	if a.resumePath != "" {
@@ -584,6 +599,7 @@ func (a *app) startFromUI(req startRequest) startResponse {
 	if req.Sequence {
 		cfg.SeriesName = safeWindowsBaseName(req.SeriesName)
 	}
+	cfg.FileName = fileName
 	j := a.addJob(urls, req.Mode, formatID, output, cfg, notes)
 	a.resumePath = ""
 	return startResponse{URLs: urls, JobID: j.ID}

@@ -393,6 +393,9 @@ func replaceOutputTemplate(args []string, tmpl string) []string {
 // that would otherwise be "Captured_Video_<time>" takes the page's title,
 // shortened so the full path stays playable (path_length.go).
 func (a *app) capturedFileBase(rawURL string, c browserMediaCandidate, dir string) string {
+	if a.cfg.FileName != "" {
+		return a.cfg.FileName
+	}
 	n, ep := namingFor(a.cfg), a.sequenceEpisode()
 	if n.custom() && ep > 0 && strings.TrimSpace(c.Title) == "" {
 		return capturedOutputBaseNamed(rawURL, c.PageTitle, n, ep)

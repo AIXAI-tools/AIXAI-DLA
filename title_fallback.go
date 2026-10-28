@@ -70,7 +70,7 @@ func titleFromPage(body string) string {
 // id to the page's title. Nothing happens when the page shows no title or
 // the new name is taken; the download itself is never affected.
 func (a *app) renameIDOnlyFiles(ctx context.Context, rawURL string, args []string, from int) {
-	if from < 0 || from >= len(a.itemFiles) || a.seqHashes != nil {
+	if from < 0 || from >= len(a.itemFiles) || a.seqHashes != nil || a.cfg.FileName != "" {
 		return
 	}
 	type target struct {

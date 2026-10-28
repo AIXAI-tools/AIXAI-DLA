@@ -102,6 +102,9 @@ func sequenceEpisodeAt(cfg settings, index int) int {
 // outputBase names a page or capture download of rawURL with the batch's
 // naming (capturedOutputBase when there is none).
 func (a *app) outputBase(rawURL, title string) string {
+	if a.cfg.FileName != "" {
+		return a.cfg.FileName
+	}
 	return capturedOutputBaseNamed(rawURL, title, namingFor(a.cfg), a.sequenceEpisode())
 }
 

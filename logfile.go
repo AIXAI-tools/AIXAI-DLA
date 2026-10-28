@@ -197,6 +197,9 @@ func (a *app) logTaskHeader(urls []string, mode int, formatID string, cfg settin
 	} else if cfg.Sequence {
 		b.WriteString(fmt.Sprintf("連續序號：%d ～ %d\r\n", cfg.SequenceStart, cfg.SequenceEnd))
 	}
+	if cfg.FileName != "" {
+		b.WriteString("自訂檔名：" + cfg.FileName + "\r\n")
+	}
 	b.WriteString(fmt.Sprintf("網址（共 %d 個）：\r\n", len(urls)))
 	for i, u := range urls {
 		b.WriteString(fmt.Sprintf("  %d. %s\r\n", i+1, u))

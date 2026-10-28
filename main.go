@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.28"
+	appVersion = "4.2.29"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -313,6 +313,9 @@ type settings struct {
 	// retried addresses are no longer one run from SequenceStart. Per task
 	// only, like SeriesName.
 	Episodes []int `json:"episodes,omitempty"`
+	// FileName is the 自訂檔名 of a one-address task (custom_name.go). Per
+	// task only, like SeriesName.
+	FileName string `json:"file_name,omitempty"`
 	// UnsafeMode turns 帳號安全模式 off. Stored inverted so that settings files
 	// written by older versions (without the key) get safety mode enabled.
 	UnsafeMode bool `json:"unsafe_mode"`
@@ -2262,6 +2265,9 @@ func (a *app) runTikTokCrawlerFallback(ctx context.Context, rawURL string, mode 
 				quality = "720"
 			}
 			outputPath := filepath.Join(output, tiktokCrawlerOutputName(rawURL))
+			if cfg.FileName != "" {
+				outputPath = filepath.Join(output, cfg.FileName+".mp4")
+			}
 			args = append(args, "-output", outputPath, "-quality", quality)
 			if mode == 2 {
 				// Profiles/hashtags are batch outputs. The crawler interprets -output
@@ -2986,6 +2992,9 @@ func (a *app) runLuxFallback(ctx context.Context, rawURL string, mode int, forma
 
 func (a *app) buildLuxArgs(rawURL string, mode int, formatID, output string, cfg settings) ([]string, error) {
 	args := []string{"-o", output, "-retry", "10"}
+	if cfg.FileName != "" && mode != 2 {
+		args = append(args, "-O", cfg.FileName)
+	}
 	if cookieFile := strings.TrimSpace(cfg.CookieFile); cookieFile != "" && validFile(cookieFile, 1) {
 		args = append(args, "-c", cookieFile)
 	}
@@ -3094,7 +3103,9 @@ func (a *app) runHaokanFallback(ctx context.Context, rawURL string, mode int, fo
 		origin = u.Scheme + "://" + u.Host
 	}
 	extra := []string{"--referer", "https://haokan.baidu.com/", "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1", "--add-header", "Origin:" + origin}
-	if clean := safeWindowsBaseName(title); clean != "" {
+	if cfg.FileName != "" {
+		extra = append(extra, "-o", customTemplate(cfg.FileName))
+	} else if clean := safeWindowsBaseName(title); clean != "" {
 		extra = append(extra, "-o", clean+".%(ext)s")
 	}
 	args = insertBeforeLast(args, extra...)
@@ -3739,6 +3750,8 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		single, playlist := outputTemplates(output)
 		if collection && cfg.PlaylistFolder {
 			args = append(args, "-o", playlist)
+		} else if cfg.FileName != "" && !collection {
+			args = append(args, "-o", customTemplate(cfg.FileName))
 		} else if custom := a.sequenceTemplate(rawURL, cfg, output); custom != "" && !collection {
 			args = append(args, "-o", custom)
 		} else {

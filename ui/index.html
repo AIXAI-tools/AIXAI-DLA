@@ -249,6 +249,9 @@ details.adv>summary .sum{font-weight:400;font-size:12.5px;color:var(--faint);ove
 .menu.open{display:block}
 .menu button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text);padding:8px 10px;border-radius:6px;font:inherit;font-size:13.5px;cursor:pointer}
 .menu button:hover{background:var(--surface-3)}
+.menu button:disabled{opacity:.45;cursor:default;background:none}
+.menu.ctx{position:fixed;right:auto;min-width:120px;z-index:60}
+.seqname .err-text{flex:1 0 100%;margin-top:0}
 #dlgHistory{width:min(900px,96vw)}
 .hist-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 .hist-bar input[type=search]{flex:1;min-width:180px}
@@ -409,6 +412,10 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           </div>
         </div>
         <div class="err-text" id="err-sequence" style="margin:-6px 0 12px"></div>
+        <div class="seqname" id="fileNameBox">
+          <input type="text" id="fileName" spellcheck="false" placeholder="自訂檔名（留空＝用影片標題）" aria-label="自訂檔名" title="只下載一個網址時，可以自己取檔名；副檔名會自動加上">
+          <div class="err-text" id="err-fileName"></div>
+        </div>
         <div class="seqname hidden" id="seqNameBox">
           <input type="text" id="seriesName" spellcheck="false" placeholder="劇名（留空＝用網頁標題）" aria-label="劇名" title="檔名用的劇名；留空就用網頁標題">
           <select id="epFormat" aria-label="集數格式" title="集數格式">
@@ -673,6 +680,12 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
 </dialog>
 
 <div class="toast" id="toast"></div>
+<div class="menu ctx" id="ctxMenu" role="menu">
+  <button data-c="cut" role="menuitem">剪下</button>
+  <button data-c="copy" role="menuitem">複製</button>
+  <button data-c="paste" role="menuitem">貼上</button>
+  <button data-c="all" role="menuitem">全選</button>
+</div>
 
 <script>
 "use strict";
@@ -708,7 +721,7 @@ function fieldError(field,msg){
   document.querySelectorAll(".err-text").forEach(e=>{e.classList.remove("show");e.textContent="";});
   if(!field) return;
   const box=$("err-"+field); if(box){box.textContent=msg;box.classList.add("show");}
-  const input={urls:"urls",sequence:"seqStart",formatId:"formatId",output:"output",cookieFile:"cookieFile",fbText:"fbText"}[field];
+  const input={urls:"urls",sequence:"seqStart",fileName:"fileName",formatId:"formatId",output:"output",cookieFile:"cookieFile",fbText:"fbText"}[field];
   if(input){ $(input).classList.add("invalid"); $(input).focus(); }
   if(field==="cookieFile") $("adv").open=true;
 }
@@ -719,7 +732,7 @@ function collect(){
   return {
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
-    seriesName:$("seriesName").value.trim(), episodeFormat:$("epFormat").value, episodeSep:$("epSep").value,
+    seriesName:$("seriesName").value.trim(), fileName:$("fileName").disabled?"":$("fileName").value.trim(), episodeFormat:$("epFormat").value, episodeSep:$("epSep").value,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked, convertH264:$("convertH264").checked,
     extraArgs:$("extra").value, cookieBrowser:$("login").value, cookieFile:$("cookieFile").value, captureBrowser:$("capBrowser").value, advancedOpen:$("adv").open,
     maxJobs:+$("maxJobs").value||0, dataFolder:$("dataFolder").value.trim()
@@ -736,9 +749,15 @@ function refreshDependent(){
   $("advSum").textContent = parts.length ? "· "+parts.join("　") : "";
   $("seqBox").style.opacity = $("sequence").checked ? 1 : .75;
   $("seqNameBox").classList.toggle("hidden", !$("sequence").checked);
+  // 自訂檔名與連續集數的劇名放在同一處：勾選連續集數就換成劇名設定
+  $("fileNameBox").classList.toggle("hidden", $("sequence").checked);
+  const many=urlCount()>1, fn=$("fileName");
+  fn.disabled=many;
+  fn.placeholder=many?"自訂檔名只能用在單一網址":"自訂檔名（留空＝用影片標題）";
   $("epSep").disabled = !$("epFormat").value;
   $("epPreview").textContent = "檔名範例："+episodeName(+$("seqStart").value||1)+".mp4";
 }
+function urlCount(){ return $("urls").value.split(/\r?\n/).filter(l=>l.trim() && !l.trim().startsWith("#")).length; }
 const EP_FORMATS={zh:n=>`第${n}集`,E:n=>`E${n}`,EP:n=>`EP${n}`,Episode:n=>`Episode ${n}`};
 const EP_SEPS={none:"",space:" ",dash:"-",underscore:"_",space_dash:" - ",space_underscore:" _ "};
 // 與 episode_naming.go 相同的規則（只用來顯示範例）
@@ -753,6 +772,7 @@ function episodeName(ep){
 });
 $("adv").addEventListener("toggle",saveSoon);
 $("seriesName").addEventListener("input",refreshDependent);
+$("urls").addEventListener("input",refreshDependent);
 $("btnBrowse").onclick = async()=>{ const p=await goPickFolder($("output").value); if(p){$("output").value=p;saveSoon();} };
 $("btnOpenFolder").onclick = async()=>{ const e=await goOpenFolder($("output").value); if(e) toast(e); };
 $("btnCookie").onclick = async()=>{ const p=await goPickCookieFile(); if(p){$("cookieFile").value=p;saveSoon();} };
@@ -802,6 +822,7 @@ async function addTask(){
   const res = await goStart(collect());
   if(res.error){ fieldError(res.field, res.error); if(!res.field) showBanner("err", res.error); return; }
   hideBanner(); toast(`已加入任務 ${res.jobId}（${res.urls.length} 項）`);
+  $("fileName").value=""; // 檔名只給這一個任務，避免下一個網址沿用
 }
 $("btnGo").onclick=addTask;
 document.addEventListener("keydown",e=>{ if(e.ctrlKey && e.key==="Enter"){ e.preventDefault(); addTask(); } });
@@ -1423,6 +1444,50 @@ $("btnTerms").onclick=()=>openTerms(false);
   // counted from this program's own start (not at the same time for everyone).
   setInterval(()=>{ if($("startupUpdCheck").checked && !$("dlgUpdate").open) goCheckUpdates(); },6*3600*1000);
 })();
+
+/* ---------------- 輸入框右鍵選單 ---------------- */
+// WebView2 套件關掉了預設右鍵選單，輸入框改用自己的剪下／複製／貼上／全選
+let ctxField=null;
+const ctxEditable=el=>!!el && !el.disabled && (el.tagName==="TEXTAREA" || (el.tagName==="INPUT" && /^(text|search|url|email)$/.test(el.type)));
+function closeCtx(){ $("ctxMenu").classList.remove("open"); ctxField=null; }
+document.addEventListener("contextmenu",e=>{
+  e.preventDefault();
+  const f=e.target.closest("input,textarea");
+  if(!ctxEditable(f)){ closeCtx(); return; }
+  ctxField=f; f.focus();
+  const m=$("ctxMenu"); (f.closest("dialog[open]")||document.body).appendChild(m); // 對話框開著時要放進對話框才不會被蓋住
+  const sel=f.selectionEnd>f.selectionStart;
+  m.querySelector('[data-c="cut"]').disabled=f.readOnly||!sel;
+  m.querySelector('[data-c="copy"]').disabled=!sel;
+  m.querySelector('[data-c="paste"]').disabled=f.readOnly;
+  m.classList.add("open");
+  const r=m.getBoundingClientRect();
+  m.style.left=Math.max(4,Math.min(e.clientX,innerWidth-r.width-4))+"px";
+  m.style.top=Math.max(4,Math.min(e.clientY,innerHeight-r.height-4))+"px";
+});
+$("ctxMenu").addEventListener("mousedown",e=>e.preventDefault()); // 保留輸入框的焦點與選取範圍
+$("ctxMenu").onclick=async e=>{
+  const b=e.target.closest("button"), f=ctxField; closeCtx();
+  if(!b||!f) return;
+  const start=f.selectionStart, end=f.selectionEnd, sel=f.value.slice(start,end);
+  const back=()=>{ f.focus(); f.setSelectionRange(start,end); }; // copyText 的備用做法會移走焦點
+  switch(b.dataset.c){
+    case "all": f.focus(); f.select(); break;
+    case "copy": await copyText(sel); back(); break;
+    case "cut": if(await copyText(sel)){ back(); document.execCommand("delete"); } break;
+    case "paste": {
+      let t=""; try{ t=await goClipboardText(); }catch(_){} // 介面不是安全來源，沒有 navigator.clipboard
+      f.focus();
+      if(t) document.execCommand("insertText",false,t); // 會觸發 input 事件，也能用 Ctrl+Z 復原
+      else toast("剪貼簿沒有文字；也可以按 Ctrl+V 貼上。");
+    }
+  }
+};
+document.addEventListener("click",e=>{ if(!e.target.closest("#ctxMenu")) closeCtx(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape" && ctxField){ e.preventDefault(); closeCtx(); } });
+addEventListener("blur",closeCtx);
+addEventListener("resize",closeCtx);
+document.addEventListener("scroll",closeCtx,true);
 </script>
 </body>
 </html>

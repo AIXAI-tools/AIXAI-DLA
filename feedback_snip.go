@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -330,4 +331,26 @@ func (a *app) pickFeedbackLogs() ([]feedbackLog, string) {
 		out = append(out, l)
 	}
 	return out, strings.Join(problems, "；")
+}
+
+// readClipboardText is the clipboard's text for the input boxes' 貼上 (the
+// page has no navigator.clipboard: SetHtml pages are not a secure context).
+func readClipboardText() string {
+	if r, _, _ := procOpenClipboard.Call(0); r == 0 {
+		return ""
+	}
+	defer procCloseClipboard.Call()
+	h, _, _ := procGetClipboardData.Call(CF_UNICODETEXT)
+	if h == 0 {
+		return ""
+	}
+	size, _, _ := procGlobalSize.Call(h)
+	ptr, _, _ := procGlobalLock.Call(h)
+	if ptr == 0 || size < 2 || size > 16<<20 {
+		return ""
+	}
+	defer procGlobalUnlock.Call(h)
+	buf := make([]uint16, size/2)
+	procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&buf[0])), ptr, size&^1)
+	return syscall.UTF16ToString(buf)
 }

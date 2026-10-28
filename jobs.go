@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -347,7 +348,7 @@ func (a *app) addJob(urls []string, mode int, formatID, output string, cfg setti
 	a.jobsMu.Lock()
 	a.nextJobID++
 	j := &job{ID: a.nextJobID, URLs: urls, Items: make([]jobItem, len(urls)), Mode: mode, FormatID: formatID,
-		Output: output, Cfg: cfg, State: jobQueued, Created: time.Now(), Name: cfg.SeriesName, notes: notes}
+		Output: output, Cfg: cfg, State: jobQueued, Created: time.Now(), Name: cmp.Or(cfg.SeriesName, cfg.FileName), notes: notes}
 	for i := range j.Items {
 		j.Items[i].State = "pending"
 	}
@@ -470,9 +471,18 @@ func (a *app) startJobLocked(j *job) {
 		if saveFolderTooLong(j.Output) {
 			w.postLog(fmt.Sprintf("⚠ 儲存位置的路徑很長（%d 個字元），下載的檔案完整路徑可能超過 Windows 的 260 字元上限，部分播放器會打不開。建議改選較短的資料夾。\r\n", pathUnits(j.Output)))
 		}
+		cfg := j.Cfg
+		if cfg.FileName != "" {
+			if name := reserveCustomName(j.Output, cfg.FileName, j.ID); name != cfg.FileName {
+				w.postLog("ℹ 儲存位置已有「" + cfg.FileName + "」，這次存成「" + name + "」。\r\n")
+				cfg.FileName = name
+			}
+			w.cfg.FileName = cfg.FileName
+			defer releaseCustomNames(j.ID)
+		}
 		err := w.ensureEnvironment(ctx, false)
 		if err == nil {
-			err = w.runURLs(ctx, urls, j.Mode, j.FormatID, j.Output, j.Cfg)
+			err = w.runURLs(ctx, urls, j.Mode, j.FormatID, j.Output, cfg)
 		}
 		w.endTask()
 		a.finishJob(j, w, err)
