@@ -376,10 +376,64 @@ type tiktokCaptureDiag struct {
 	episodes   map[int]bool
 	otherMedia int // media requests ignored because they are not the episode's
 	statuses   []string
+	// What the capture tab sent at all, to tell "the page made no API call"
+	// from "the capture sees none of the page's traffic".
+	requests  int
+	reqTypes  map[string]int
+	apiSent   int // requests sent to tiktok.com/api/
+	docStatus int // status of the first page document
+	fromSW    int // responses answered by the site's service worker
 }
 
 func newTikTokCaptureDiag() *tiktokCaptureDiag {
-	return &tiktokCaptureDiag{apis: map[string]int{}, results: map[tiktokAPIResult]int{}, episodes: map[int]bool{}}
+	return &tiktokCaptureDiag{apis: map[string]int{}, results: map[tiktokAPIResult]int{}, episodes: map[int]bool{}, reqTypes: map[string]int{}}
+}
+
+// reset forgets everything counted so far (the capture moved to a new tab).
+func (d *tiktokCaptureDiag) reset() {
+	fresh := newTikTokCaptureDiag()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.apis, d.order, d.known, d.readFail = fresh.apis, nil, 0, 0
+	d.results, d.episodes, d.otherMedia, d.statuses = fresh.results, fresh.episodes, 0, nil
+	d.requests, d.reqTypes, d.apiSent, d.docStatus, d.fromSW = 0, fresh.reqTypes, 0, 0, 0
+}
+
+func isTikTokAPIURL(raw string) bool {
+	return strings.Contains(strings.ToLower(raw), "tiktok.com/api/")
+}
+
+// request counts one request the capture tab sent.
+func (d *tiktokCaptureDiag) request(kind, raw string) {
+	if kind == "" {
+		kind = "Other"
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.requests++
+	d.reqTypes[kind]++
+	if isTikTokAPIURL(raw) {
+		d.apiSent++
+	}
+}
+
+// response notes the first document's status and service-worker answers.
+func (d *tiktokCaptureDiag) response(kind string, status int, fromSW bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if kind == "Document" && d.docStatus == 0 {
+		d.docStatus = status
+	}
+	if fromSW {
+		d.fromSW++
+	}
+}
+
+// apiRequested reports whether the page has sent any TikTok API request.
+func (d *tiktokCaptureDiag) apiRequested() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.apiSent > 0
 }
 
 func (d *tiktokCaptureDiag) api(raw string, status int) {
@@ -498,6 +552,33 @@ func (d *tiktokCaptureDiag) summary(episode int) string {
 		b.WriteString("；API 狀態碼：" + strings.Join(d.statuses, "、"))
 	}
 	fmt.Fprintf(&b, "；略過的其他影片請求 %d 個", d.otherMedia)
+	fmt.Fprintf(&b, "；擷取分頁送出的請求 %d 個", d.requests)
+	if len(d.reqTypes) > 0 {
+		kinds := make([]string, 0, len(d.reqTypes))
+		for k := range d.reqTypes {
+			kinds = append(kinds, k)
+		}
+		sort.Slice(kinds, func(i, j int) bool {
+			if d.reqTypes[kinds[i]] != d.reqTypes[kinds[j]] {
+				return d.reqTypes[kinds[i]] > d.reqTypes[kinds[j]]
+			}
+			return kinds[i] < kinds[j]
+		})
+		if len(kinds) > 6 {
+			kinds = kinds[:6]
+		}
+		parts := make([]string, 0, len(kinds))
+		for _, k := range kinds {
+			parts = append(parts, fmt.Sprintf("%s %d", k, d.reqTypes[k]))
+		}
+		b.WriteString("（" + strings.Join(parts, "、") + "）")
+	}
+	if d.docStatus > 0 {
+		fmt.Fprintf(&b, "；主頁面狀態 %d", d.docStatus)
+	}
+	if d.fromSW > 0 {
+		fmt.Fprintf(&b, "；由網站背景程式（service worker）回應 %d 個", d.fromSW)
+	}
 	return b.String()
 }
 

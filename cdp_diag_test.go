@@ -40,6 +40,33 @@ func TestTikTokCaptureDiagSummary(t *testing.T) {
 	}
 }
 
+func TestTikTokCaptureDiagRequests(t *testing.T) {
+	d := newTikTokCaptureDiag()
+	d.request("Document", "https://www.tiktok.com/shortdrama/episode/1/2")
+	d.response("Document", 200, false)
+	d.request("Script", "https://cdn.example/a.js")
+	d.request("Script", "https://cdn.example/b.js")
+	d.request("", "https://cdn.example/x")
+	if d.apiRequested() {
+		t.Fatal("no API request was sent yet")
+	}
+	d.request("Fetch", "https://www.tiktok.com/api/drama/episode/item_list/?x=1")
+	d.response("Fetch", 200, true)
+	if !d.apiRequested() {
+		t.Fatal("API request not noticed")
+	}
+	got := d.summary(2)
+	for _, want := range []string{"擷取分頁送出的請求 5 個", "（Script 2、Document 1、Fetch 1、Other 1）", "主頁面狀態 200", "service worker）回應 1 個"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q:\n%s", want, got)
+		}
+	}
+	d.reset()
+	if d.apiRequested() || strings.Contains(d.summary(2), "主頁面狀態") {
+		t.Errorf("reset kept counts: %s", d.summary(2))
+	}
+}
+
 func TestTikTokAPI720IsShortSide(t *testing.T) {
 	// The real episode offered these (portrait) sizes.
 	body := `{"itemList":[{"id":"2","dramaInfo":{"dramaVideoData":{"episodeNumber":2}},"video":{"bitrateInfo":[

@@ -509,6 +509,9 @@ func (b *cdpBrowser) attachTab(targetID string) error {
 	// (Runtime.evaluate works without it), and anti-bot checks detect it and
 	// then keep repeating their "verify you are human" step.
 	_ = b.send("Page.addScriptToEvaluateOnNewDocument", map[string]interface{}{"source": cdpAutoplayScript()})
+	// Room for the page's own request list (pageResourceSummary): busy pages
+	// pass the default 250 entries within seconds.
+	_ = b.send("Page.addScriptToEvaluateOnNewDocument", map[string]interface{}{"source": "try{performance.setResourceTimingBufferSize(5000)}catch(e){}"})
 	if win, err := b.browserCall("Browser.getWindowForTarget", map[string]interface{}{"targetId": targetID}); err == nil {
 		b.windowID = int(cdpFloat(win.Result, "windowId"))
 	}
@@ -538,6 +541,40 @@ func (b *cdpBrowser) reopenTab() error {
 		b.hide()
 	}
 	return nil
+}
+
+// pageResourceScript reads the capture tab's own record of the requests it
+// made (counts and the page path only).
+const pageResourceScript = `(() => {
+  const es = performance.getEntriesByType('resource');
+  const api = es.filter(e => /tiktok\.com\/api\//i.test(e.name));
+  const ep = api.filter(e => /\/api\/(drama\/episode\/item_list|item\/detail)/i.test(e.name));
+  return JSON.stringify({all: es.length, api: api.length, ep: ep.length, path: location.pathname, vis: document.visibilityState});
+})()`
+
+// pageResourceSummary tells whether the page itself made API requests the
+// capture did not see: requests the page lists but the capture never got
+// mean its network events are lost, none at all mean the page made none.
+func (b *cdpBrowser) pageResourceSummary() string {
+	reply, err := b.pageCall("Runtime.evaluate", map[string]interface{}{"expression": pageResourceScript, "returnByValue": true})
+	if err != nil {
+		return "無法讀取頁面記錄：" + err.Error()
+	}
+	res, _ := reply.Result["result"].(map[string]interface{})
+	var v struct {
+		All  int    `json:"all"`
+		API  int    `json:"api"`
+		Ep   int    `json:"ep"`
+		Path string `json:"path"`
+		Vis  string `json:"vis"`
+	}
+	if json.Unmarshal([]byte(cdpString(res, "value")), &v) != nil {
+		return "無法讀取頁面記錄"
+	}
+	if r := []rune(v.Path); len(r) > 80 {
+		v.Path = string(r[:80])
+	}
+	return fmt.Sprintf("頁面自己記錄的請求 %d 個、TikTok API %d 個（分集資料 %d 個）；頁面路徑 %s；顯示狀態 %s", v.All, v.API, v.Ep, v.Path, v.Vis)
 }
 
 // tabSummary lists the browser's tabs (site names only) for the diagnostics.
@@ -1010,6 +1047,9 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			st.Initiator = cdpString(initiator, "url")
 			st.RequestHeaders = mergeStringMaps(st.RequestHeaders, cdpMapString(req["headers"]))
 			stateMu.Unlock()
+			if tikDiag != nil {
+				tikDiag.request(cdpString(p, "type"), newURL)
+			}
 		case "Network.requestWillBeSentExtraInfo":
 			stateMu.Lock()
 			st := states[reqID]
@@ -1042,7 +1082,12 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				subSeen[st.URL] = true
 				subFiles = append(subFiles, st.URL)
 			}
+			kind, status := st.RequestType, st.Status
 			stateMu.Unlock()
+			if tikDiag != nil {
+				fromSW, _ := resp["fromServiceWorker"].(bool)
+				tikDiag.response(kind, status, fromSW)
+			}
 			emitFor(reqID)
 		case "Network.responseReceivedExtraInfo":
 			stateMu.Lock()
@@ -1085,7 +1130,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			}
 			stateMu.Lock()
 			st := states[reqID]
-			if st != nil && strings.Contains(strings.ToLower(st.URL), "tiktok.com/api/") {
+			if st != nil && isTikTokAPIURL(st.URL) {
 				tikDiag.api(st.URL, st.Status)
 			}
 			ok := st != nil && st.Status == 200 && isTikTokDramaAPI(st.URL)
@@ -1156,7 +1201,37 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	defer adCheck.Stop()
 	silentCheck := time.NewTimer(12 * time.Second)
 	defer silentCheck.Stop()
+	// A TikTok episode page asks the site's API within seconds of loading; a
+	// capture that sees no such request (while seeing other traffic, or none)
+	// is not watching the page that plays.
+	var tiktokCheckC <-chan time.Time
+	if isTikTokDrama {
+		tiktokCheck := time.NewTimer(15 * time.Second)
+		defer tiktokCheck.Stop()
+		tiktokCheckC = tiktokCheck.C
+	}
 	reopened := false
+	// reopenAndReload moves the capture to a new background tab and opens the
+	// page again there, with the full waiting time.
+	reopenAndReload := func() error {
+		reopened = true
+		if err := b.reopenTab(); err != nil {
+			return fmt.Errorf("擷取用的分頁沒有回應，開新分頁也失敗：%w", err)
+		}
+		navEvents = b.networkEvents.Load()
+		if err := b.send("Page.navigate", map[string]interface{}{"url": rawURL}); err != nil {
+			return err
+		}
+		hint.Reset(25 * time.Second)
+		if !deadline.Stop() {
+			select {
+			case <-deadline.C:
+			default:
+			}
+		}
+		deadline.Reset(maxWait)
+		return nil
+	}
 	// userWait is set once the window was shown for the user to act in (press
 	// play, close an ad, finish a check); the capture then waits longer.
 	userWait := false
@@ -1236,17 +1311,25 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			if reopened || b.networkEvents.Load() != navEvents {
 				continue
 			}
-			reopened = true
 			tabs := b.tabSummary()
 			a.postLog("⚠ 擷取用的分頁 12 秒內沒有任何網路活動，改開一個新分頁重新載入（當時的分頁：" + tabs + "）。\r\n")
 			a.diagNote("擷取分頁沒有網路活動，已改開新分頁；當時的分頁：" + tabs)
-			if err := b.reopenTab(); err != nil {
-				return browserMediaCandidate{}, fmt.Errorf("擷取用的分頁沒有回應，開新分頁也失敗：%w", err)
-			}
-			navEvents = b.networkEvents.Load()
-			if err := b.send("Page.navigate", map[string]interface{}{"url": rawURL}); err != nil {
+			if err := reopenAndReload(); err != nil {
 				return browserMediaCandidate{}, err
 			}
+		case <-tiktokCheckC:
+			if reopened || tikDiag.apiRequested() || best.URL != "" {
+				continue
+			}
+			page := b.pageResourceSummary()
+			tabs := b.tabSummary()
+			a.postLog("⚠ 擷取用的分頁 15 秒內沒有送出任何分集資料請求，改開一個新分頁重新載入（" + page + "；當時的分頁：" + tabs + "）。\r\n")
+			a.diagNote("15 秒沒有分集資料請求，已改開新分頁；" + tikDiag.summary(tiktokEpisode) + "；" + page + "；當時的分頁：" + tabs)
+			if err := reopenAndReload(); err != nil {
+				return browserMediaCandidate{}, err
+			}
+			// Count only what the new tab sends.
+			tikDiag.reset()
 		case <-hint.C:
 			if !isTikTokDrama && !reloaded && (best.URL == "" || onlyStatic()) {
 				// Usually the site was just slow: reload the page once before
@@ -1412,9 +1495,12 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				return browserMediaCandidate{}, errors.New("擷取用的瀏覽器分頁沒有任何網路活動（程式看不到頁面載入）；請關閉擷取用的瀏覽器視窗後重試，程式會重新開啟")
 			}
 			if isTikTokDrama {
-				summary := tikDiag.summary(tiktokEpisode)
+				summary := tikDiag.summary(tiktokEpisode) + "；" + b.pageResourceSummary()
+				if reopened {
+					summary += "（已換過新分頁）"
+				}
 				a.postLog("ℹ 分集擷取診斷：" + summary + "\r\n")
-				a.diagNote("分集擷取：" + summary)
+				a.diagNote("分集擷取：" + summary + "；擷取分頁：" + b.tabSummary())
 				if tikDiag.noKnownAPI() {
 					return browserMediaCandidate{}, fmt.Errorf("已登入，但 90 秒內頁面沒有送出第 %d 集的分集資料；網站的資料格式可能已變更", tiktokEpisode)
 				}
