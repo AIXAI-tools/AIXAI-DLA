@@ -733,6 +733,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		return browserMediaCandidate{}, ctx.Err()
 	}
 	defer func() { <-a.captureSem }()
+	a.resetCaptureKeys()
 	b, err := a.captureBrowser(ctx)
 	if err != nil {
 		return browserMediaCandidate{}, err
@@ -764,7 +765,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	emitFor := func(requestID string) {
 		stateMu.Lock()
 		st := states[requestID]
-		if st == nil || !st.SeenResponse || st.URL == "" || st.Status >= 400 {
+		if st == nil || !st.SeenResponse || st.URL == "" || (st.Status >= 400 && !st.Refused) {
 			stateMu.Unlock()
 			return
 		}
@@ -779,7 +780,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 		if captureHeader(respHeaders, "content-type") == "" && st.MimeType != "" {
 			respHeaders["content-type"] = st.MimeType
 		}
-		ev := browserCaptureEvent{Kind: "cdp", URL: st.URL, PageURL: rawURL, RequestType: st.RequestType, Initiator: st.Initiator, RequestHeaders: reqHeaders, ResponseHeaders: respHeaders}
+		ev := browserCaptureEvent{Kind: "cdp", URL: st.URL, PageURL: rawURL, RequestType: st.RequestType, Initiator: st.Initiator, RequestHeaders: reqHeaders, ResponseHeaders: respHeaders, Refused: st.Refused}
 		stateMu.Unlock()
 		if c, ok := mediaCandidateScore(ev); ok {
 			select {
@@ -852,6 +853,43 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			pageJSON = append(pageJSON, []byte(body))
 		}
 		pageJSONMu.Unlock()
+	}
+	// keepHLSKey reads a small binary response the player fetched; a 16-byte one
+	// may be the AES-128 key of an encrypted stream (capture_hls_key.go).
+	var keyNeeded atomic.Bool
+	readManifest := func(requestID string) {
+		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
+		if err != nil || reply.Result == nil {
+			return
+		}
+		body := cdpString(reply.Result, "body")
+		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
+			raw, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return
+			}
+			body = string(raw)
+		}
+		if _, ok := playerOnlyKey(body); ok {
+			keyNeeded.Store(true)
+		}
+	}
+	keepHLSKey := func(requestID, keyURL string) {
+		reply, err := b.pageCall("Network.getResponseBody", map[string]interface{}{"requestId": requestID})
+		if err != nil || reply.Result == nil {
+			return
+		}
+		body := cdpString(reply.Result, "body")
+		if encoded, _ := reply.Result["base64Encoded"].(bool); encoded {
+			raw, err := base64.StdEncoding.DecodeString(body)
+			if err != nil {
+				return
+			}
+			body = string(raw)
+		}
+		if len(body) == aesKeySize {
+			a.noteCaptureKey(keyURL, []byte(body))
+		}
 	}
 	// Video ads: the clips listed in the page's VAST responses and the sources
 	// of ad <video> elements are never the episode. Kept for this capture only.
@@ -987,6 +1025,24 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	// player has not loaded any yet (some load the track only after the video
 	// starts), waits a little for it: the loaded file tells which list is this
 	// episode's.
+	// awaitHLSKey: a manifest of this capture names a key only the player can
+	// fetch; the page is kept open until the player has fetched it.
+	awaitHLSKey := func() {
+		if !keyNeeded.Load() || a.captureKeyCount() > 0 {
+			return
+		}
+		a.postLog("ℹ 串流有加密，等待播放器取得解密金鑰…\r\n")
+		end := time.Now().Add(hlsKeyWait)
+		for time.Now().Before(end) && a.captureKeyCount() == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-b.readerDone:
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
 	awaitSubtitles := func() {
 		waitReads(2 * time.Second)
 		end := time.Now().Add(subtitleLoadWait)
@@ -1078,6 +1134,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			st.Status = int(cdpFloat(resp, "status"))
 			st.ResponseHeaders = mergeStringMaps(st.ResponseHeaders, cdpMapString(resp["headers"]))
 			st.SeenResponse = true
+			st.Refused = st.Status == 403 && isManifestURL(st.URL)
 			if st.Status > 0 && st.Status < 400 && isSubtitleResponse(st.URL, st.MimeType) && !subSeen[st.URL] && len(subFiles) <= maxCaptureSubtitleFiles {
 				subSeen[st.URL] = true
 				subFiles = append(subFiles, st.URL)
@@ -1099,6 +1156,19 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			st.ResponseHeaders = mergeStringMaps(st.ResponseHeaders, cdpMapString(p["headers"]))
 			stateMu.Unlock()
 			emitFor(reqID)
+		case "Network.loadingFailed":
+			// A manifest blocked before any response (e.g. a refused cross-site
+			// request) is still the address the player wanted.
+			stateMu.Lock()
+			st := states[reqID]
+			refused := st != nil && !st.SeenResponse && isManifestURL(st.URL)
+			if refused {
+				st.SeenResponse, st.Refused = true, true
+			}
+			stateMu.Unlock()
+			if refused {
+				emitFor(reqID)
+			}
 		case "Network.loadingFinished":
 			if !isTikTokDrama {
 				stateMu.Lock()
@@ -1114,7 +1184,20 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				if doc {
 					docRead, docURL = true, st.URL
 				}
+				hlsKey := st != nil && st.Status == 200 && (st.RequestType == "XHR" || st.RequestType == "Fetch") &&
+					mayBeKeyResponse(st.MimeType) && cdpFloat(p, "encodedDataLength") <= maxKeyResponseBytes
+				var keyURL string
+				if hlsKey {
+					keyURL = st.URL
+				}
+				manifest := st != nil && st.Status == 200 && isManifestURL(st.URL)
 				stateMu.Unlock()
+				if hlsKey {
+					go keepHLSKey(reqID, keyURL)
+				}
+				if manifest {
+					go readManifest(reqID)
+				}
 				if doc {
 					pageJSONReads.Add(1)
 					go readStaticHTML(reqID, docURL)
@@ -1355,6 +1438,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				if builtInVideoIsEpisode(ctx, rawURL, wantEp, staticSources(best.URL)) {
 					a.postLog(fmt.Sprintf("✓ 網頁內建的影片每一集都不同，就是第 %d 集的影片。\r\n", wantEp))
 					awaitSubtitles()
+					awaitHLSKey()
 					return finish(best), nil
 				}
 			}
@@ -1472,6 +1556,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 					a.postLog(fmt.Sprintf("⚠ 沒有找到確定屬於第 %d 集的串流，改用目前播放的串流。\r\n", pageEpisode))
 				}
 				awaitSubtitles()
+				awaitHLSKey()
 				return finish(best), nil
 			}
 		case <-deadline.C:
@@ -1488,6 +1573,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			}
 			if best.URL != "" && !isAd(best.URL) {
 				awaitSubtitles()
+				awaitHLSKey()
 				return finish(best), nil
 			}
 			if b.networkEvents.Load() == navEvents {

@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.27"
+	appVersion = "4.2.28"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -586,6 +586,12 @@ type app struct {
 	// by the worker goroutine) so a truncated result can be fetched again.
 	lastYtArgs  []string
 	lastYtFiles []string
+	// lastCmdOutput is the output tail of the most recent external command.
+	lastCmdOutput string
+	// captureKeys are the 16-byte responses the page fetched during the latest
+	// browser capture (possible AES-128 stream keys; capture_hls_key.go).
+	captureKeysMu sync.Mutex
+	captureKeys   []capturedKey
 	// lastCaptureFile is the file saved by the latest browser-capture download;
 	// lastCaptureStreams the stream address(es) it came from.
 	lastCaptureFile    string
@@ -4052,6 +4058,7 @@ func (a *app) runExternalCommand(ctx context.Context, exePath string, args []str
 	}
 	_ = pr.Close()
 	err := <-waitCh
+	a.lastCmdOutput = outputTail
 	a.cmdMu.Lock()
 	a.currentCmd = nil
 	a.currentDone = nil

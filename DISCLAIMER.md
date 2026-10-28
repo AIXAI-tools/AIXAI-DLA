@@ -14,13 +14,14 @@
    - 依你所在地著作權法屬於合理使用（例如個人學習、研究、評論引用）且不違反該網站服務條款的情形。
 2. **嚴禁**將本工具用於：
    - 未經授權重製、散布、公開傳輸、公開播送、販售或以其他方式利用他人受著作權保護的內容；
-   - 規避、破解或移除任何數位權利管理（DRM）、加密、付費牆、登入或地區限制，或其他「防盜拷措施」；
+   - 規避、破解或移除任何數位權利管理（DRM）、付費牆、登入或地區限制等「防盜拷措施」或存取控制；
    - 取得你本身沒有合法觀看權限的內容；
    - 任何商業目的，或違反網站服務條款、隱私權、個人資料保護或其他法律的行為。
 
 ## 2. 本工具不做的事
 
-- 本工具**不破解 DRM、不繞過付費牆、登入或地區限制**。遇到受此類保護的內容時，本工具不會、也不應被修改為繞過保護。
+- 本工具**不破解 DRM（例如 Widevine、PlayReady、FairPlay）、不繞過付費牆、登入或地區限制**。遇到受此類保護的內容時，本工具不會、也不應被修改為繞過保護。
+- 遇到一般加密的串流（HLS AES-128）時，本工具只使用網站播放器在播放時實際取得的金鑰解密，不推算、不破解金鑰；播放器取不到金鑰的內容一樣無法下載。
 - 本工具**不提供、不儲存、不索引、不推薦任何影音內容或影音網址清單**；所有網址皆由使用者自行輸入，內容直接由使用者的電腦向原網站取得。
 - 本專案**不以營利為目的**：不收費、不含廣告、不販售任何功能。
 
@@ -60,6 +61,7 @@
 
 *English summary:* This is a general-purpose tool for downloading content **you are legally entitled to save**.
 Do not use it to infringe copyright, circumvent DRM, paywalls or access controls, or violate site terms.
+It does not break DRM; a standard AES-128 HLS stream is decrypted only with the key the site's own player obtains during playback.
 It hosts, indexes and recommends no content and is non-commercial. You are solely responsible for your use.
 Provided "AS IS" without warranty; to the maximum extent permitted by law the authors are not liable for any damages.
 Not affiliated with or endorsed by any website. Rights holders may contact us via GitHub Issues.

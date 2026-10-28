@@ -43,6 +43,9 @@ type cdpRequestState struct {
 	MimeType        string
 	Status          int
 	SeenResponse    bool
+	// Refused: a stream manifest the server refused to the browser (403 or a
+	// failed request); see capture_referer.go.
+	Refused bool
 }
 
 // cdpPipe is a private DevTools connection over two anonymous pipes

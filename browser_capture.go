@@ -30,6 +30,8 @@ type browserCaptureEvent struct {
 	Initiator       string            `json:"initiator"`
 	RequestHeaders  map[string]string `json:"requestHeaders"`
 	ResponseHeaders map[string]string `json:"responseHeaders"`
+	// Refused: the server refused this manifest to the browser.
+	Refused bool `json:"refused"`
 }
 
 type browserMediaCandidate struct {
@@ -235,6 +237,11 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 	lower := strings.ToLower(raw)
 	pathLower := strings.ToLower(u.Path)
 	ct := strings.ToLower(captureHeader(ev.ResponseHeaders, "content-type"))
+	respHeaders := ev.ResponseHeaders
+	if ev.Refused {
+		// The headers describe the server's error page, not the stream.
+		ct, respHeaders = "", nil
+	}
 	// Never mistake a single media segment for the complete stream.
 	segmentExts := []string{".ts", ".m4s", ".cmfv", ".cmfa", ".aac", ".vtt", ".srt"}
 	for _, ext := range segmentExts {
@@ -277,8 +284,16 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 	default:
 		return browserMediaCandidate{}, false
 	}
+	if ev.Refused {
+		// Only a manifest is kept, below a manifest the page could load but
+		// still at least 125, the score the capture loop settles on.
+		if kind != "HLS" && kind != "DASH" {
+			return browserMediaCandidate{}, false
+		}
+		score -= 20
+	}
 
-	length := captureContentLength(ev.ResponseHeaders)
+	length := captureContentLength(respHeaders)
 	if length >= 1<<20 {
 		score += 8
 	}
@@ -508,6 +523,16 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 		a.postLog("⚠ 媒體伺服器拒絕一般連線（防機器人檢查），改用瀏覽器連線方式重試。\r\n")
 		err = a.runCommand(ctx, insertBeforeLast(args, "--impersonate", "chrome"))
 	}
+	if err != nil && (isHTTPForbidden(err) || isAntiBotChallenge(err)) && !a.stopRequested.Load() && ctx.Err() == nil {
+		// Some media servers refuse requests that name the page that embeds
+		// them (Referer/Origin) while serving the same address without them.
+		a.postLog("⚠ 媒體伺服器拒絕存取（403），改用不帶來源網頁資訊的連線重試。\r\n")
+		plain := withoutRefererArgs(args)
+		err = a.runCommand(ctx, plain)
+		if err != nil && isAntiBotChallenge(err) && !a.stopRequested.Load() && ctx.Err() == nil {
+			err = a.runCommand(ctx, insertBeforeLast(plain, "--impersonate", "chrome"))
+		}
+	}
 	if err == nil {
 		for _, f := range a.lastYtFiles {
 			if validFile(f, 1) {
@@ -529,6 +554,9 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 		a.postLog("⚠ 已捕捉到真實媒體網址，但 yt-dlp 下載仍失敗；改用 FFmpeg 並重放瀏覽器原始 Request Headers。\r\n")
 		if ffErr := a.downloadCapturedWithFFmpeg(ctx, rawURL, candidate, mode, output); ffErr == nil {
 			return nil
+		} else if errors.Is(ffErr, errIncompleteStream) {
+			// The reason the stream cannot be saved whole says more than yt-dlp's error.
+			return fmt.Errorf("%w（yt-dlp：%v）", ffErr, err)
 		} else {
 			return fmt.Errorf("已捕捉媒體，但 yt-dlp 與 FFmpeg 都下載失敗：%v；FFmpeg：%w", err, ffErr)
 		}
@@ -568,17 +596,41 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 	if len(lines) > 0 {
 		ffArgs = append(ffArgs, "-headers", strings.Join(lines, "\r\n")+"\r\n")
 	}
-	ffArgs = append(ffArgs, "-i", candidate.URL)
+	input := candidate.URL
+	if local, cleanup, kerr := a.prepareKeyedPlaylist(ctx, candidate); kerr != nil {
+		a.postLog("⚠ " + kerr.Error() + "\r\n")
+	} else if local != "" {
+		// The stream's key comes from the player (capture_hls_key.go). The
+		// input is a local file now, which takes no HTTP options.
+		defer cleanup()
+		input = local
+		ffArgs = []string{"-y", "-allowed_extensions", "ALL", "-protocol_whitelist", "file,http,https,tcp,tls,crypto"}
+	}
+	ffArgs = append(ffArgs, "-i", input)
 	if mode == 1 {
 		ffArgs = append(ffArgs, "-vn", "-q:a", "0", dest)
 	} else {
 		ffArgs = append(ffArgs, "-map", "0:v?", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart", dest)
 	}
+	removeYtDlpLeftovers(dest)
 	if err := a.runExternalCommand(ctx, a.ffmpegPath, ffArgs, "FFmpeg Capture"); err != nil {
-		return err
+		if errors.Is(err, errStopped) || ctx.Err() != nil || !isHTTPForbidden(errors.New(a.lastCmdOutput)) {
+			return err
+		}
+		// Same as the yt-dlp path: try once more without Referer/Origin.
+		a.postLog("⚠ 媒體伺服器拒絕存取（403），改用不帶來源網頁資訊的連線重試。\r\n")
+		if err := a.runExternalCommand(ctx, a.ffmpegPath, withoutRefererFFmpeg(ffArgs), "FFmpeg Capture"); err != nil {
+			return err
+		}
 	}
 	if !validFile(dest, 1024) {
 		return errors.New("FFmpeg 執行完成但沒有產生有效媒體檔")
+	}
+	if reason := ffmpegIncompleteReason(a.lastCmdOutput); reason != "" {
+		if moved := markFailedCheck(dest); moved != "" {
+			a.postLog("⚠ 不完整的檔案已移到：" + moved + "\r\n")
+		}
+		return fmt.Errorf("%w：%s", errIncompleteStream, reason)
 	}
 	a.postLog("✓ FFmpeg 已使用瀏覽器實際播放請求完成下載：" + dest + "\r\n")
 	a.lastCaptureFile = dest
