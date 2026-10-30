@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.29"
+	appVersion = "4.2.30"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -599,6 +599,9 @@ type app struct {
 	// lastCaptureStreams the stream address(es) it came from.
 	lastCaptureFile    string
 	lastCaptureStreams []string
+	// hlsSubs: the subtitle tracks of the HLS stream being downloaded
+	// (audio_language.go), saved when the page lists no subtitle files.
+	hlsSubs []pageSubtitle
 	// episodeGuard is set while one ?ep=N episode is captured (episode_capture.go).
 	episodeGuard *episodeGuard
 	// captureMaxShortSide is the 最高 720p limit of the current browser
@@ -2603,9 +2606,12 @@ func (a *app) tryWebCandidate(ctx context.Context, candidate, referer, pageURL, 
 	// A candidate stands for the one video on the page: never let it expand
 	// into a playlist or channel.
 	extras := []string{"--no-playlist", "--playlist-items", "1", "--referer", referer, "--impersonate", "chrome"}
+	headers := map[string]string{"referer": referer, "user-agent": chromeUserAgent}
 	if base, err := url.Parse(referer); err == nil && base.Scheme != "" && base.Host != "" {
 		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
+		headers["origin"] = base.Scheme + "://" + base.Host
 	}
+	args = a.applyHLSTracks(ctx, args, candidateMode, cfg, pageURL, candidate, headers)
 	args = insertBeforeLast(args, extras...)
 	return a.runCommand(ctx, args)
 }

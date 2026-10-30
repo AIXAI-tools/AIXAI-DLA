@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -43,13 +44,18 @@ type flashWInfo struct {
 	DwTimeout uint32
 }
 
-// browserTopWindows returns the visible top-level browser windows owned by pid.
-func browserTopWindows(pid uint32) []uintptr {
-	var found []uintptr
-	cb := syscall.NewCallback(func(h, _ uintptr) uintptr {
+// The EnumWindows callback is created once: every syscall.NewCallback with a
+// new closure takes one of Go's 2000 callback slots for good, and the capture
+// polls the windows every 1.5 seconds (v4.2.29 crashed after about 50 minutes
+// of capturing). The callback reads the pid and appends through these.
+var (
+	topWindowsMu    sync.Mutex
+	topWindowsPID   uint32
+	topWindowsFound []uintptr
+	topWindowsCB    = syscall.NewCallback(func(h, _ uintptr) uintptr {
 		var owner uint32
 		procGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&owner)))
-		if owner != pid {
+		if owner != topWindowsPID {
 			return 1
 		}
 		if vis, _, _ := procIsWindowVisible.Call(h); vis == 0 {
@@ -58,11 +64,20 @@ func browserTopWindows(pid uint32) []uintptr {
 		cls := make([]uint16, 64)
 		procGetClassNameW.Call(h, uintptr(unsafe.Pointer(&cls[0])), uintptr(len(cls)))
 		if syscall.UTF16ToString(cls) == "Chrome_WidgetWin_1" {
-			found = append(found, h)
+			topWindowsFound = append(topWindowsFound, h)
 		}
 		return 1
 	})
-	procEnumWindows.Call(cb, 0)
+)
+
+// browserTopWindows returns the visible top-level browser windows owned by pid.
+func browserTopWindows(pid uint32) []uintptr {
+	topWindowsMu.Lock()
+	defer topWindowsMu.Unlock()
+	topWindowsPID, topWindowsFound = pid, nil
+	procEnumWindows.Call(topWindowsCB, 0)
+	found := topWindowsFound
+	topWindowsFound = nil
 	return found
 }
 

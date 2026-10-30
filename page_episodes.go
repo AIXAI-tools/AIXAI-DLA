@@ -390,9 +390,12 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 	}
 	args = replaceOutputTemplate(args, a.outputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
 	extras := []string{"--no-playlist", "--referer", finalURL, "--impersonate", "chrome"}
+	headers := map[string]string{"referer": finalURL, "user-agent": chromeUserAgent}
 	if base, err := url.Parse(finalURL); err == nil && base.Scheme != "" && base.Host != "" {
 		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
+		headers["origin"] = base.Scheme + "://" + base.Host
 	}
+	args = a.applyHLSTracks(ctx, args, streamMode, cfg, rawURL, stream, headers)
 	args = insertBeforeLast(args, extras...)
 	return true, a.runCommand(ctx, args)
 }

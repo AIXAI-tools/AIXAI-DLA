@@ -31,13 +31,20 @@ type pageSubtitle struct {
 	Label   string
 	Lang    string
 	Default bool
+	// HLS: URL is a subtitle playlist of WebVTT segments (audio_language.go),
+	// fetched with Headers.
+	HLS     bool
+	Headers map[string]string
 }
 
 var (
 	pageSubtitlesKeyRE = regexp.MustCompile(`(?:"subtitles"|'subtitles'|\bsubtitles)\s*:\s*\{`)
 	pageTrackRE        = regexp.MustCompile(`(?is)<track\b[^>]*>`)
-	pageTrackAttrRE    = regexp.MustCompile(`(?is)\b(kind|src|srclang|label|default)\b(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?`)
-	subtitleExts       = map[string]bool{".vtt": true, ".srt": true, ".ass": true, ".ssa": true}
+	// pageScriptRE: script and style blocks, where "<track src=blob>" can be
+	// just words in a comment, not an element.
+	pageScriptRE    = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>`)
+	pageTrackAttrRE = regexp.MustCompile(`(?is)\b(kind|src|srclang|label|default)\b(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?`)
+	subtitleExts    = map[string]bool{".vtt": true, ".srt": true, ".ass": true, ".ssa": true}
 )
 
 // balancedObject returns the JSON object that starts at body[start] ('{'),
@@ -138,7 +145,7 @@ func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
 	if len(out) > 0 {
 		return out
 	}
-	for _, tag := range pageTrackRE.FindAllString(body, -1) {
+	for _, tag := range pageTrackRE.FindAllString(pageScriptRE.ReplaceAllString(body, ""), -1) {
 		attrs := map[string]string{}
 		for _, m := range pageTrackAttrRE.FindAllStringSubmatch(tag[len("<track"):], -1) {
 			attrs[strings.ToLower(m[1])] = html.UnescapeString(m[2] + m[3] + m[4])
@@ -286,6 +293,9 @@ func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep in
 func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL string, videos []string, cfg settings) {
 	subs = fetchableSubtitles(subs)
 	if len(subs) == 0 {
+		subs = a.hlsSubs
+	}
+	if len(subs) == 0 {
 		return
 	}
 	var targets []string
@@ -304,7 +314,13 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 		if a.stopRequested.Load() {
 			return
 		}
-		text, err := fetchSubtitle(ctx, s.URL, pageURL, cfg)
+		var text string
+		var err error
+		if s.HLS {
+			text, err = fetchHLSSubtitle(ctx, s.URL, s.Headers)
+		} else {
+			text, err = fetchSubtitle(ctx, s.URL, pageURL, cfg)
+		}
 		if errors.Is(err, errThumbnailTrack) {
 			a.postLog("ℹ 略過進度列的預覽縮圖清單（格式與字幕相同，但不是字幕）。\r\n")
 			a.diagNote("略過預覽縮圖清單（不是字幕）")

@@ -494,6 +494,7 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 	args = replaceOutputTemplate(args, base+".%(ext)s")
 
 	headers := candidate.RequestHeaders
+	args = a.applyHLSTracks(ctx, args, mode, localCfg, rawURL, candidate.URL, headers)
 	// Preserve the request context observed by the browser. Never log these
 	// values; cookies and authorization tokens may be sensitive.
 	if referer := sanitizeCapturedHeader(captureHeader(headers, "referer")); referer != "" {

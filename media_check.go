@@ -293,6 +293,7 @@ func isMediaCheckFailure(err error) bool {
 func (a *app) resetOutputs() {
 	a.outputs = nil
 	a.lastYtArgs, a.lastYtFiles = nil, nil
+	a.hlsSubs = nil
 }
 
 // noteOutput records a media file written by the current step.
