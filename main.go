@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.30"
+	appVersion = "4.2.31"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -2587,6 +2587,25 @@ func extractWebMediaCandidates(body, baseURL string) []webMediaCandidate {
 	return out
 }
 
+// episodeVideoCandidates drops candidates that cannot be this page's video:
+// subtitle files (saved separately, page_subtitles.go; downloaded as the video
+// they would take its name) and, on an episode page whose data lists every
+// episode, the streams listed for other episodes.
+func episodeVideoCandidates(cands []webMediaCandidate, hint pageEpisodeHint, pageURL string) []webMediaCandidate {
+	useHint := hint.Page == pageURL
+	var out []webMediaCandidate
+	for _, c := range cands {
+		if u, err := url.Parse(c.URL); err == nil && subtitleExts[strings.ToLower(filepath.Ext(u.Path))] {
+			continue
+		}
+		if useHint && hint.otherEpisode(c.URL) > 0 {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // tryWebCandidate downloads one media candidate of the page pageURL. On an
 // episode page the file is named like the page-data and capture downloads
 // (title_E003): a stream address named by yt-dlp would carry its whole query
@@ -2677,7 +2696,7 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 		}
 		a.postLog("⚠ 頁面播放資料中的串流下載失敗，改用其他方式：" + firstLine(err.Error()) + "\r\n")
 	}
-	candidates := extractWebMediaCandidates(body, finalURL)
+	candidates := episodeVideoCandidates(extractWebMediaCandidates(body, finalURL), a.pageEpisodeHint, rawURL)
 	if len(candidates) == 0 {
 		return errors.New("網頁中沒有找到可辨識的公開播放器或媒體 URL")
 	}

@@ -287,3 +287,27 @@ func TestIsGenericForbidden(t *testing.T) {
 		}
 	}
 }
+
+// On an episode page the fallback candidates must not include subtitle files
+// or the streams listed for other episodes (they would be saved under this
+// episode's name).
+func TestEpisodeVideoCandidates(t *testing.T) {
+	page := "https://site.example/play/9/20"
+	cands := []webMediaCandidate{
+		{URL: "https://cdn.example/m4/9/001_aa.vtt", Kind: "json"},
+		{URL: "https://cdn.example/m4/9/001_aa.mp4", Kind: "json"},
+		{URL: "https://cdn.example/m4/9/020_bb.SRT?x=1", Kind: "direct"},
+		{URL: "https://cdn.example/m4/9/020_bb.mp4", Kind: "json"},
+	}
+	hint := pageEpisodeHint{Page: page, Streams: []string{"https://cdn.example/m4/9/020_bb.mp4"},
+		Others: []pageEpisodeEntry{{Episode: 1, Stream: "https://cdn.example/m4/9/001_aa.mp4"}}}
+	got := episodeVideoCandidates(cands, hint, page)
+	if len(got) != 1 || got[0].URL != "https://cdn.example/m4/9/020_bb.mp4" {
+		t.Fatalf("got %+v", got)
+	}
+	// A hint for another page is not used; subtitles are still dropped.
+	got = episodeVideoCandidates(cands, hint, "https://site.example/play/9/21")
+	if len(got) != 2 {
+		t.Fatalf("other page: got %+v", got)
+	}
+}

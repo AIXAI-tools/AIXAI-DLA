@@ -87,6 +87,7 @@ func mp4Truncated(path string) bool {
 	size := st.Size()
 	var off int64
 	hasMoov := false
+	var moovOff, moovSize int64
 	first := true
 	hdr := make([]byte, 16)
 	for off < size {
@@ -99,8 +100,18 @@ func mp4Truncated(path string) bool {
 		boxSize := int64(binary.BigEndian.Uint32(hdr[:4]))
 		boxType := string(hdr[4:8])
 		if !validBoxType(boxType) {
-			// Not ISO-BMFF at all → not ours to judge. Garbage after valid boxes → damaged.
-			return !first
+			// Not ISO-BMFF at all → not ours to judge. Without a movie
+			// header, garbage after valid boxes → damaged. Some servers store
+			// the media data after the movie header without a box header (the
+			// file plays in full): then the movie header's chunk offsets say
+			// where the data ends.
+			if first {
+				return false
+			}
+			if !hasMoov {
+				return true
+			}
+			return mp4ChunksBeyond(f, moovOff, moovSize, size)
 		}
 		if first {
 			switch boxType {
@@ -127,8 +138,9 @@ func mp4Truncated(path string) bool {
 		if boxSize < headerLen {
 			return true
 		}
-		if boxType == "moov" {
+		if boxType == "moov" && !hasMoov {
 			hasMoov = true
+			moovOff, moovSize = off, boxSize
 		}
 		if off+boxSize > size {
 			return true
@@ -136,6 +148,57 @@ func mp4Truncated(path string) bool {
 		off += boxSize
 	}
 	return !hasMoov
+}
+
+// mp4ChunksBeyond reports whether a chunk offset in the movie header (the box
+// at off, size bytes) points at or past the end of the file. A movie header
+// that cannot be read is not judged.
+func mp4ChunksBeyond(f *os.File, off, size, fileSize int64) bool {
+	if size < 8 || size > 64<<20 {
+		return false
+	}
+	buf := make([]byte, size)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return false
+	}
+	var maxOff uint64
+	var walk func(b []byte, depth int)
+	walk = func(b []byte, depth int) {
+		for len(b) >= 8 && depth < 8 {
+			n := binary.BigEndian.Uint32(b[:4])
+			if n < 8 || int64(n) > int64(len(b)) {
+				return
+			}
+			box, body := string(b[4:8]), b[8:n]
+			switch box {
+			case "moov", "trak", "mdia", "minf", "stbl":
+				walk(body, depth+1)
+			case "stco", "co64":
+				w := 4
+				if box == "co64" {
+					w = 8
+				}
+				if len(body) >= 8 {
+					count := int(binary.BigEndian.Uint32(body[4:8]))
+					for i := 0; i < count && 8+(i+1)*w <= len(body); i++ {
+						e := body[8+i*w : 8+(i+1)*w]
+						var v uint64
+						if w == 4 {
+							v = uint64(binary.BigEndian.Uint32(e))
+						} else {
+							v = binary.BigEndian.Uint64(e)
+						}
+						if v > maxOff {
+							maxOff = v
+						}
+					}
+				}
+			}
+			b = b[n:]
+		}
+	}
+	walk(buf, 0)
+	return maxOff > 0 && maxOff >= uint64(fileSize)
 }
 
 func validBoxType(t string) bool {

@@ -112,3 +112,43 @@ func TestIsAntiBotChallenge(t *testing.T) {
 		t.Error("plain 403 detected as anti-bot challenge")
 	}
 }
+
+// A served file whose media data follows the movie header without a box
+// header (it plays in full) is not a cut transfer.
+func TestMP4TruncatedDataAfterMoov(t *testing.T) {
+	raw := []byte{0xec, 0x0b, 0x97, 0x40, 0x8a, 0x39, 0x0a, 0xd7, 0x58, 0x91, 0xb2, 0xb4}
+	odd := writeTemp(t, "e.mp4", mp4Box("ftyp", 16), mp4Box("moov", 100), mp4Box("moov", 100), raw, make([]byte, 500))
+	if mp4Truncated(odd) {
+		t.Fatal("data after moov reported as truncated")
+	}
+	noMoov := writeTemp(t, "f.mp4", mp4Box("ftyp", 16), raw, make([]byte, 500))
+	if !mp4Truncated(noMoov) {
+		t.Fatal("garbage without moov not detected")
+	}
+}
+
+// The same layout cut short: the movie header's chunk offsets point past the end.
+func TestMP4TruncatedDataAfterMoovCut(t *testing.T) {
+	wrap := func(typ string, inner []byte) []byte {
+		b := make([]byte, 8, 8+len(inner))
+		binary.BigEndian.PutUint32(b, uint32(8+len(inner)))
+		copy(b[4:], typ)
+		return append(b, inner...)
+	}
+	moov := func(last uint32) []byte {
+		stco := make([]byte, 16)
+		binary.BigEndian.PutUint32(stco[4:], 2)
+		binary.BigEndian.PutUint32(stco[8:], 200)
+		binary.BigEndian.PutUint32(stco[12:], last)
+		return wrap("moov", wrap("trak", wrap("mdia", wrap("minf", wrap("stbl", wrap("stco", stco))))))
+	}
+	raw := append([]byte{0xec, 0x0b, 0x97, 0x40}, make([]byte, 1000)...)
+	ok := writeTemp(t, "g.mp4", mp4Box("ftyp", 16), moov(900), raw)
+	if mp4Truncated(ok) {
+		t.Fatal("complete file reported as truncated")
+	}
+	cut := writeTemp(t, "h.mp4", mp4Box("ftyp", 16), moov(5000), raw)
+	if !mp4Truncated(cut) {
+		t.Fatal("cut file not detected")
+	}
+}
