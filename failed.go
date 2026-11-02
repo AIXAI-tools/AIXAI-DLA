@@ -79,7 +79,7 @@ func (a *app) saveFailedLocked() {
 	if err != nil {
 		return
 	}
-	a.notePersistError("「無法下載的網址」清單", writeFileAtomic(a.failedPath(), data))
+	a.notePersistError("「下載失敗清單」", writeFileAtomic(a.failedPath(), data))
 }
 
 func (a *app) failedViews() []failedView {
@@ -195,7 +195,7 @@ func (a *app) retryFailed(ids []int) string {
 			cfg.Sequence = false
 		}
 		a.addJob(g.urls, g.first.Mode, g.first.FormatID, g.first.Output, cfg,
-			[]string{"ℹ 重試「無法下載的網址」清單中的項目。\r\n"})
+			[]string{"ℹ 重試「下載失敗清單」中的項目。\r\n"})
 	}
 	return ""
 }

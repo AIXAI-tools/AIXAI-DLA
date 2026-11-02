@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.31"
+	appVersion = "4.2.32"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -3820,6 +3820,9 @@ func (a *app) buildArgs(rawURL string, mode int, formatID, output string, cfg se
 		args = append(args, "-f", "bv*+ba/b", "--merge-output-format", "mp4", rawURL)
 	default:
 		args = append(args, rawURL)
+	}
+	if isTikTokPage(rawURL) && !userChoosesFormat(cfg.ExtraArgs) {
+		args = applyTikTokFormat(args, mode)
 	}
 	return args, nil
 }

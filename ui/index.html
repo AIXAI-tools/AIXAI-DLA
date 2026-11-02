@@ -552,8 +552,8 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           <div class="banner" id="banner"></div>
         </div>
       </section>
-      <section class="card" id="failCard">
-        <div class="card-h"><h2><span class="seal"></span>無法下載的網址<span class="cnt" id="failCount"></span></h2>
+      <section class="card" id="failCard" hidden>
+        <div class="card-h"><h2><span class="seal"></span>下載失敗清單（自動記錄）<span class="cnt" id="failCount"></span></h2>
           <div class="acts">
             <button class="btn ghost sm" id="btnFailRetryAll" title="把清單中的網址全部加入一個新任務重新下載">全部重試</button>
             <button class="btn ghost sm" id="btnFailCopyAll" title="複製清單中的所有網址（一行一個）">全部複製</button>
@@ -880,7 +880,7 @@ function renderJobs(){
     const line = j.state==="running" ? (j.status||"") : j.state==="queued" ? (j.waiting||"等待開始…") : (j.message||"");
     const btns=(JOB_BTNS[j.state]||[]).filter(([a])=>a!=="prioritize"||j!==firstActive).map(([a,l])=>`<button class="btn sm${a==="abort"?" danger":""}" data-act="${a}" data-id="${j.id}">${l}</button>`).join("")
       + `<button class="btn ghost sm" data-act="log" data-id="${j.id}">紀錄檔</button><button class="btn ghost sm" data-act="folder" data-id="${j.id}">開啟資料夾</button>`
-      + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
+      + (j.state==="failed"||j.state==="partial"||j.state==="done"||j.state==="paused"||j.state==="aborted" ? `<button class="btn ghost sm" data-act="feedback" data-id="${j.id}" title="這個任務有問題（失敗、沒有聲音、畫面不對…）？按這裡回報，會自動附上網址與這個任務的紀錄">回報問題</button><button class="btn ghost sm" data-act="report" data-id="${j.id}" title="把這個任務的診斷摘要與紀錄整理成一個檔案（已遮蔽敏感資訊），可直接傳給開發者">回報包</button>` : "");
     const items=j.items.map((t,i)=>`<span class="ic">${icon[t.state]||"○"}</span>
       <div style="min-width:0"><div class="u" title="${esc(j.urls[i]||"")}">${i+1}. ${esc(j.urls[i]||"")}</div>${t.msg?`<div class="m" title="${esc(t.msg)}">${esc(t.brief||t.msg)}</div>`:""}</div>
       <span class="p">${t.state==="running"&&t.pct!=null?t.pct.toFixed(0)+"%":""}</span>`);
@@ -948,6 +948,7 @@ $("jobs").onclick=async e=>{
   if(act==="fold"){ setFold([id], !state.foldJobs.has(id)); return; }
   if(act==="log"){ const err=await goOpenLogFile(id); if(err) toast(err); return; }
   if(act==="report"){ const msg=await goReportPack(id); if(msg) toast(msg); return; }
+  if(act==="feedback"){ if(j) openFeedbackForJob(j); return; }
   if(act==="folder"){ const err=await goOpenFolder(j?j.output:$("output").value); if(err) toast(err); return; }
   if(act==="prioritize"){ const err=await goJobPrioritize(id); if(err) toast(err); return; }
   if(act==="abort" && !confirm(`確定要中止任務 ${id}？已下載完成的檔案會保留，但這個任務不能再繼續。`)) return;
@@ -1140,6 +1141,7 @@ function setFailed(list){
   failedList=list||[];
   const ul=$("fails"), n=failedList.length;
   $("failCount").textContent=n?String(n):"";
+  $("failCard").hidden=!n; // 沒有失敗時整區隱藏，避免被當成輸入網址的地方
   ["btnFailRetryAll","btnFailCopyAll","btnFailClear"].forEach(id=>$(id).disabled=!n);
   if(!n){ ul.innerHTML='<li class="empty">目前沒有。批次中有網址無法下載時會列在這裡，其他網址照常下載完成。</li>'; return; }
   ul.innerHTML=failedList.slice().reverse().map(f=>`<li class="fail">
@@ -1170,7 +1172,7 @@ $("fails").onclick=async e=>{
 };
 $("btnFailRetryAll").onclick=async()=>{ if(!failedList.length) return; const err=await goFailedRetry([]); toast(err||`已把 ${failedList.length} 個網址加入新任務重新下載。`); };
 $("btnFailCopyAll").onclick=async()=>{ if(!failedList.length) return; toast(await copyText(failedList.map(f=>f.url).join("\n"))?`已複製 ${failedList.length} 個網址`:"無法存取剪貼簿"); };
-$("btnFailClear").onclick=()=>{ if(failedList.length && confirm(`清除「無法下載的網址」清單中的 ${failedList.length} 筆？已下載的檔案不受影響。`)) goFailedRemove([]); };
+$("btnFailClear").onclick=()=>{ if(failedList.length && confirm(`清除「下載失敗清單」中的 ${failedList.length} 筆？已下載的檔案不受影響。`)) goFailedRemove([]); };
 
 /* ---------------- log ---------------- */
 const LOG_MAX=3000;
@@ -1380,6 +1382,18 @@ function setFeedbackRef(n){
   if(!n) return;
   el.append(`這份回報會接續你在 ${n.sent} 回報的「${n.title}」（開發者會看到是同一件事）。`);
   const x=mkBtn("不接續",()=>setFeedbackRef(null)); x.style.marginLeft="8px"; el.append(x);
+}
+// 從任務卡「回報問題」：帶入這個任務的網址與紀錄檔，使用者只要寫哪裡不對
+async function openFeedbackForJob(j){
+  const urls=(j.urls||[]).slice(0,10), more=(j.urls||[]).length-urls.length;
+  setFeedbackRef(null);
+  const NL=String.fromCharCode(10);
+  $("fbText").value=[`任務 ${j.id} 的網址：`, ...urls, ...(more>0?[`…另外 ${more} 個`]:[]), "", "哪裡不對（例如：下載失敗、沒有聲音、只有音樂、畫面或集數不對）：", ""].join(NL);
+  state.logs=[]; state.logsRemoved=new Set(); renderLogs();
+  openFeedback();
+  const t=$("fbText"); t.setSelectionRange(t.value.length,t.value.length);
+  const ls=await goJobFeedbackLogs(j.id);
+  (ls||[]).forEach(l=>{ if(l && l.path && !state.logs.some(x=>x.path===l.path)) state.logs.push(l); }); renderLogs();
 }
 function openFeedbackFor(n,text){
   setFeedbackRef(n);

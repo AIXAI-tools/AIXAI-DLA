@@ -284,6 +284,27 @@ func (a *app) latestFeedbackLogs() []feedbackLog {
 	return out
 }
 
+// jobFeedbackLogs is what the task card's 回報問題 attaches: that task's own
+// log (falling back to the latest ones when it has none) plus a recent crash log.
+func (a *app) jobFeedbackLogs(id int) []feedbackLog {
+	p := a.jobLogFile(id)
+	if p == "" {
+		return a.latestFeedbackLogs()
+	}
+	var out []feedbackLog
+	if l, err := a.attachFeedbackLog(p); err == nil {
+		out = append(out, l)
+	} else {
+		out = a.latestRunFeedbackLogs()
+	}
+	if c := a.recentCrashLog(); c != "" {
+		if l, err := a.attachFeedbackLog(c); err == nil {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func (a *app) latestRunFeedbackLogs() []feedbackLog {
 	files := a.runLogFiles()
 	var out []feedbackLog

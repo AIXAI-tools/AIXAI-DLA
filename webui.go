@@ -454,6 +454,7 @@ func (a *app) bindUI() {
 	_ = w.Bind("goStartSnip", func() string { return a.startSnip() })
 	_ = w.Bind("goCancelSnip", func() { snipCancel.Store(true) })
 	_ = w.Bind("goLatestLogs", func() []feedbackLog { return a.latestFeedbackLogs() })
+	_ = w.Bind("goJobFeedbackLogs", func(id int) []feedbackLog { return a.jobFeedbackLogs(id) })
 	_ = w.Bind("goPickLogs", func() map[string]interface{} {
 		logs, problem := a.pickFeedbackLogs()
 		return map[string]interface{}{"logs": logs, "problem": problem}
