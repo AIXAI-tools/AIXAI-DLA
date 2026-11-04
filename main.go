@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.33"
+	appVersion = "4.2.34"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -2528,8 +2528,7 @@ func looksLikeProviderVideo(raw string) bool {
 }
 
 func looksLikeDirectMedia(raw string) bool {
-	lower := strings.ToLower(raw)
-	return strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") || strings.Contains(lower, ".m4v") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mpd")
+	return hasAnyMediaExt(raw, ".m3u8", ".mp4", ".m4v", ".webm", ".mpd")
 }
 
 func extractWebMediaCandidates(body, baseURL string) []webMediaCandidate {

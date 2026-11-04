@@ -761,6 +761,16 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 
 	states := map[string]*cdpRequestState{}
 	candidates := make(chan browserMediaCandidate, 128)
+	challengeCh := make(chan struct{}, 1)
+	challengeSeen, challengePrompted := false, false
+	notifyChallenge := func(u string) {
+		if isTurnstileURL(u) {
+			select {
+			case challengeCh <- struct{}{}:
+			default:
+			}
+		}
+	}
 	var stateMu sync.Mutex
 	emitFor := func(requestID string) {
 		stateMu.Lock()
@@ -1103,6 +1113,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			st.Initiator = cdpString(initiator, "url")
 			st.RequestHeaders = mergeStringMaps(st.RequestHeaders, cdpMapString(req["headers"]))
 			stateMu.Unlock()
+			notifyChallenge(newURL)
 			if tikDiag != nil {
 				tikDiag.request(cdpString(p, "type"), newURL)
 			}
@@ -1139,8 +1150,9 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 				subSeen[st.URL] = true
 				subFiles = append(subFiles, st.URL)
 			}
-			kind, status := st.RequestType, st.Status
+			kind, status, respURL := st.RequestType, st.Status, st.URL
 			stateMu.Unlock()
+			notifyChallenge(respURL)
 			if tikDiag != nil {
 				fromSW, _ := resp["fromServiceWorker"].(bool)
 				tikDiag.response(kind, status, fromSW)
@@ -1298,6 +1310,7 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 	// page again there, with the full waiting time.
 	reopenAndReload := func() error {
 		reopened = true
+		challengeSeen, challengePrompted = false, false
 		if err := b.reopenTab(); err != nil {
 			return fmt.Errorf("擷取用的分頁沒有回應，開新分頁也失敗：%w", err)
 		}
@@ -1413,7 +1426,42 @@ func (a *app) captureMediaWithCDP(ctx context.Context, rawURL, cookieFile string
 			}
 			// Count only what the new tab sends.
 			tikDiag.reset()
+		case <-challengeCh:
+			// 很多網站在背景載入不需要點的驗證元件：先等 8 秒，仍沒有影片才叫使用者
+			if !challengeSeen && !challengePrompted && best.URL == "" && !isTikTokDrama {
+				challengeSeen = true
+				if !hint.Stop() {
+					select {
+					case <-hint.C:
+					default:
+					}
+				}
+				hint.Reset(8 * time.Second)
+			}
 		case <-hint.C:
+			if challengePrompted {
+				continue
+			}
+			if challengeSeen && !isTikTokDrama && (best.URL == "" || onlyStatic()) {
+				// 驗證畫面還在：不重新整理（會洗掉驗證框），直接請使用者親手完成
+				challengePrompted = true
+				userWait = true
+				b.reveal(a.scale)
+				a.loginBrowser.Store(b)
+				a.emit("login", map[string]interface{}{"waiting": true, "reason": "action"})
+				a.flashMainWindow()
+				procMessageBeep.Call(mbIconAsterisk)
+				a.postLog("ℹ 網頁正在顯示「確認您是真人」驗證，已把瀏覽器視窗叫到前面：請在該視窗親手點選驗證框，通過後程式會繼續擷取（本工具不會自動操作驗證）。若點了之後驗證一直重複出現，表示這個網站不接受本工具的擷取方式，請改用一般瀏覽器觀看。程式最多再等 10 分鐘。\r\n")
+				a.postStatus("狀態：等待真人驗證完成（可在瀏覽器視窗操作，最多 10 分鐘）…")
+				if !deadline.Stop() {
+					select {
+					case <-deadline.C:
+					default:
+					}
+				}
+				deadline.Reset(10 * time.Minute)
+				continue
+			}
 			if !isTikTokDrama && !reloaded && (best.URL == "" || onlyStatic()) {
 				// Usually the site was just slow: reload the page once before
 				// calling the user.

@@ -266,19 +266,19 @@ func mediaCandidateScore(ev browserCaptureEvent) (browserMediaCandidate, bool) {
 	score := 0
 	kind := "media"
 	switch {
-	case strings.Contains(lower, ".m3u8") || strings.Contains(ct, "mpegurl") || strings.Contains(ct, "application/vnd.apple.mpegurl"):
+	case hasMediaExt(lower, ".m3u8") || strings.Contains(ct, "mpegurl") || strings.Contains(ct, "application/vnd.apple.mpegurl"):
 		score = 150
 		kind = "HLS"
-	case strings.Contains(lower, ".mpd") || strings.Contains(ct, "dash+xml"):
+	case hasMediaExt(lower, ".mpd") || strings.Contains(ct, "dash+xml"):
 		score = 145
 		kind = "DASH"
-	case strings.Contains(ct, "video/mp4") || strings.Contains(lower, ".mp4"):
+	case strings.Contains(ct, "video/mp4") || hasMediaExt(lower, ".mp4"):
 		score = 125
 		kind = "MP4"
 	case strings.HasPrefix(ct, "video/") || strings.EqualFold(ev.RequestType, "media"):
 		score = 100
 		kind = "Video"
-	case strings.Contains(lower, ".webm") || strings.Contains(ct, "video/webm"):
+	case hasMediaExt(lower, ".webm") || strings.Contains(ct, "video/webm"):
 		score = 105
 		kind = "WebM"
 	default:
