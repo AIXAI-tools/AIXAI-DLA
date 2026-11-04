@@ -4,6 +4,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,33 @@ func TestSubtitleFromJSONSkipsThumbnailKind(t *testing.T) {
 	}
 	if _, ok := subtitleFromJSON(map[string]any{"file": "https://x.example.com/c.vtt", "kind": "captions", "label": "English"}, ""); !ok {
 		t.Fatal("captions track rejected")
+	}
+}
+
+func TestPageEntrySubtitles(t *testing.T) {
+	body := `<script>var data = {"episodes":[` +
+		`{"id":11,"route_episode_number":1,"number":1,"play_url":"https:\/\/cdn.example.com\/1.m3u8","multi_subtitles":[` +
+		`{"language_code":"en-US","label":"English","subtitle_url":"\/e\/s\/ep1-en","is_default":true},` +
+		`{"language_code":"zh-TW","label":"繁體中文","subtitle_url":"\/e\/s\/ep1-zh","is_default":false}],` +
+		`"selected_subtitle_language":"zh-TW","multi_resolutions":[]},` +
+		`{"id":12,"route_episode_number":2,"number":2,"play_url":"https:\/\/cdn.example.com\/2.m3u8","multi_subtitles":[` +
+		`{"language_code":"en-US","label":"English","subtitle_url":"\/e\/s\/ep2-en","is_default":true},` +
+		`{"language_code":"zh-TW","label":"繁體中文","subtitle_url":"\/e\/s\/ep2-zh","is_default":false}],` +
+		`"selected_subtitle_language":"zh-TW"}]};</script>`
+	got := pageEpisodeSubtitles(body, "https://www.example.com/watch/show/2?lang=zh-TW", 2)
+	want := []pageSubtitle{{URL: "https://www.example.com/e/s/ep2-zh", Label: "繁體中文", Lang: "zh-TW", Default: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("episode 2 = %#v, want %#v", got, want)
+	}
+	// No selected language in the data: the address's lang, then the default.
+	noSel := strings.ReplaceAll(body, `"selected_subtitle_language":"zh-TW"`, `"selected_subtitle_language":""`)
+	if got := pageEpisodeSubtitles(noSel, "https://www.example.com/watch/show/1?lang=zh-TW", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-zh" {
+		t.Fatalf("address lang = %#v", got)
+	}
+	if got := pageEpisodeSubtitles(noSel, "https://www.example.com/watch/show/1", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-en" {
+		t.Fatalf("default = %#v", got)
+	}
+	if got := pageEpisodeSubtitles(body, "https://www.example.com/watch/show/3", 3); len(got) != 0 {
+		t.Fatalf("unlisted episode = %#v", got)
 	}
 }

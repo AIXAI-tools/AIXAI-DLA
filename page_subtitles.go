@@ -40,6 +40,8 @@ type pageSubtitle struct {
 var (
 	pageSubtitlesKeyRE = regexp.MustCompile(`(?:"subtitles"|'subtitles'|\bsubtitles)\s*:\s*\{`)
 	pageTrackRE        = regexp.MustCompile(`(?is)<track\b[^>]*>`)
+	// pageEntrySubtitlesKeyRE: a subtitle list inside one episode's object.
+	pageEntrySubtitlesKeyRE = regexp.MustCompile(`"(?:multi_subtitles|subtitles)"\s*:\s*\[`)
 	// pageScriptRE: script and style blocks, where "<track src=blob>" can be
 	// just words in a comment, not an element.
 	pageScriptRE    = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>`)
@@ -93,12 +95,12 @@ func subtitleFromJSON(m map[string]any, baseURL string) (pageSubtitle, bool) {
 	if kind := strings.ToLower(str("kind")); kind != "" && kind != "subtitles" && kind != "captions" {
 		return pageSubtitle{}, false
 	}
-	src := resolveCandidateURL(baseURL, str("src", "url", "file"))
+	src := resolveCandidateURL(baseURL, str("src", "url", "file", "subtitle_url"))
 	if src == "" {
 		return pageSubtitle{}, false
 	}
 	s := pageSubtitle{URL: src, Label: str("label", "name", "language_name"), Lang: str("lang", "srclang", "language", "language_code")}
-	for _, k := range []string{"isDefault", "default"} {
+	for _, k := range []string{"isDefault", "default", "is_default"} {
 		if b, ok := m[k].(bool); ok && b {
 			s.Default = true
 		}
@@ -145,6 +147,9 @@ func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
 	if len(out) > 0 {
 		return out
 	}
+	if subs := pageEntrySubtitles(body, baseURL, ep); len(subs) > 0 {
+		return subs
+	}
 	for _, tag := range pageTrackRE.FindAllString(pageScriptRE.ReplaceAllString(body, ""), -1) {
 		attrs := map[string]string{}
 		for _, m := range pageTrackAttrRE.FindAllStringSubmatch(tag[len("<track"):], -1) {
@@ -161,6 +166,90 @@ func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
 		add(pageSubtitle{URL: src, Label: attrs["label"], Lang: attrs["srclang"], Default: isDefault})
 	}
 	return out
+}
+
+// pageEntrySubtitles reads subtitles kept inside each episode's own object in
+// the page data ({"number":3,…,"multi_subtitles":[{"language_code":"zh-TW",
+// "subtitle_url":…}],"selected_subtitle_language":"zh-TW"}). Only the
+// language the page shows is returned: the selected one, else the address's
+// lang, else the list's default, else the first.
+func pageEntrySubtitles(body, baseURL string, ep int) []pageSubtitle {
+	if ep <= 0 {
+		return nil
+	}
+	want := ""
+	if u, err := url.Parse(baseURL); err == nil {
+		want = u.Query().Get("lang")
+	}
+	for _, loc := range pageEntrySubtitlesKeyRE.FindAllStringIndex(body, -1) {
+		start := enclosingObjectStart(body, loc[0])
+		if start < 0 {
+			continue
+		}
+		obj := balancedObject(body, start)
+		var m map[string]any
+		if obj == "" || json.Unmarshal([]byte(obj), &m) != nil || entryEpisodeNumber(m) != ep {
+			continue
+		}
+		var subs []pageSubtitle
+		for _, key := range []string{"multi_subtitles", "subtitles"} {
+			list, _ := m[key].([]any)
+			for _, item := range list {
+				if sm, ok := item.(map[string]any); ok {
+					if s, ok := subtitleFromJSON(sm, baseURL); ok {
+						subs = append(subs, s)
+					}
+				}
+			}
+			if len(subs) > 0 {
+				break
+			}
+		}
+		if len(subs) == 0 {
+			continue
+		}
+		lang, _ := m["selected_subtitle_language"].(string)
+		if strings.TrimSpace(lang) == "" {
+			lang = want
+		}
+		pick := -1
+		for i, s := range subs {
+			if lang != "" && strings.EqualFold(s.Lang, strings.TrimSpace(lang)) {
+				pick = i
+				break
+			}
+		}
+		for i := 0; pick < 0 && i < len(subs); i++ {
+			if subs[i].Default {
+				pick = i
+			}
+		}
+		if pick < 0 {
+			pick = 0
+		}
+		s := subs[pick]
+		s.Default = true
+		return []pageSubtitle{s}
+	}
+	return nil
+}
+
+// entryEpisodeNumber is the episode number an episode object names
+// (explicit episode keys before a plain "number").
+func entryEpisodeNumber(m map[string]any) int {
+	for _, k := range []string{"route_episode_number", "episode_number", "episodeNumber", "episode_no", "episodeNo", "episode", "ep", "number"} {
+		switch v := m[k].(type) {
+		case float64:
+			if v > 0 && v == float64(int(v)) {
+				return int(v)
+			}
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // subtitleNames gives each subtitle the suffix of its file name base: the
