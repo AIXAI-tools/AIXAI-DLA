@@ -40,8 +40,6 @@ type pageSubtitle struct {
 var (
 	pageSubtitlesKeyRE = regexp.MustCompile(`(?:"subtitles"|'subtitles'|\bsubtitles)\s*:\s*\{`)
 	pageTrackRE        = regexp.MustCompile(`(?is)<track\b[^>]*>`)
-	// pageEntrySubtitlesKeyRE: a subtitle list inside one episode's object.
-	pageEntrySubtitlesKeyRE = regexp.MustCompile(`"(?:multi_subtitles|subtitles)"\s*:\s*\[`)
 	// pageScriptRE: script and style blocks, where "<track src=blob>" can be
 	// just words in a comment, not an element.
 	pageScriptRE    = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>`)
@@ -112,6 +110,10 @@ func subtitleFromJSON(m map[string]any, baseURL string) (pageSubtitle, bool) {
 // ep: the per-episode subtitles object first, then the page's <track>
 // elements (which belong to the video the page plays).
 func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
+	return pageEpisodeSubtitlesFor(body, baseURL, "", ep)
+}
+
+func pageEpisodeSubtitlesFor(body, baseURL, streamURL string, ep int) []pageSubtitle {
 	var out []pageSubtitle
 	seen := map[string]bool{}
 	add := func(s pageSubtitle) {
@@ -147,7 +149,7 @@ func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
 	if len(out) > 0 {
 		return out
 	}
-	if subs := pageEntrySubtitles(body, baseURL, ep); len(subs) > 0 {
+	if subs, matched := pageEntrySubtitles(body, baseURL, streamURL, ep); matched {
 		return subs
 	}
 	for _, tag := range pageTrackRE.FindAllString(pageScriptRE.ReplaceAllString(body, ""), -1) {
@@ -168,29 +170,21 @@ func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
 	return out
 }
 
-// pageEntrySubtitles reads subtitles kept inside each episode's own object in
-// the page data ({"number":3,…,"multi_subtitles":[{"language_code":"zh-TW",
-// "subtitle_url":…}],"selected_subtitle_language":"zh-TW"}). Only the
-// language the page shows is returned: the selected one, else the address's
-// lang, else the list's default, else the first.
-func pageEntrySubtitles(body, baseURL string, ep int) []pageSubtitle {
+// 字幕對應規則：影片是哪一支，字幕就要配哪一支。
+//   - 下載 play_url 那支 → 用 multi_subtitles／subtitles（依 selected → 網址 lang → 預設 → 第一個）。
+//   - 下載 direct_play_url 那支 → multi_subtitles／subtitles 裡 subtitle_url 的 src 與
+//     direct_subtitle_url 相同的那一項優先，沒有就用 direct_subtitle_url（語言未知則不加標籤）。
+func pageEntrySubtitles(body, baseURL, streamURL string, ep int) ([]pageSubtitle, bool) {
 	if ep <= 0 {
-		return nil
+		return nil, false
 	}
 	want := ""
 	if u, err := url.Parse(baseURL); err == nil {
 		want = u.Query().Get("lang")
 	}
-	for _, loc := range pageEntrySubtitlesKeyRE.FindAllStringIndex(body, -1) {
-		start := enclosingObjectStart(body, loc[0])
-		if start < 0 {
-			continue
-		}
-		obj := balancedObject(body, start)
-		var m map[string]any
-		if obj == "" || json.Unmarshal([]byte(obj), &m) != nil || entryEpisodeNumber(m) != ep {
-			continue
-		}
+	var result []pageSubtitle
+	matched := false
+	episodeJSONObjects(body, ep, func(m map[string]any) bool {
 		var subs []pageSubtitle
 		for _, key := range []string{"multi_subtitles", "subtitles"} {
 			list, _ := m[key].([]any)
@@ -205,8 +199,41 @@ func pageEntrySubtitles(body, baseURL string, ep int) []pageSubtitle {
 				break
 			}
 		}
+		directSub := resolveCandidateURL(baseURL, episodeObjectString(m, "direct_subtitle_url", "directSubtitleUrl"))
+		if len(subs) == 0 && directSub == "" {
+			return false
+		}
+		matched = true
+		playURL, directPlayURL, preferPlay := episodeObjectStreams(m)
+		if directPlayURL == "" {
+			directPlayURL = resolveCandidateURL(baseURL, episodeObjectString(m, "direct_play_url", "directPlayUrl"))
+		}
+		useDirect := false
+		if streamURL != "" {
+			useDirect = directPlayURL != "" && sameMediaFile(streamURL, directPlayURL)
+		} else {
+			useDirect = directPlayURL != "" && !preferPlay
+		}
+		if useDirect {
+			if directSub != "" {
+				for _, s := range subs {
+					if sameMediaFile(s.URL, directSub) {
+						s.Default = true
+						result = []pageSubtitle{s}
+						return true
+					}
+				}
+				result = []pageSubtitle{{URL: directSub, Default: true}}
+				return true
+			}
+			if playURL != "" && !sameMediaFile(playURL, directPlayURL) {
+				result = nil
+				return true
+			}
+		}
 		if len(subs) == 0 {
-			continue
+			result = nil
+			return true
 		}
 		lang, _ := m["selected_subtitle_language"].(string)
 		if strings.TrimSpace(lang) == "" {
@@ -229,9 +256,10 @@ func pageEntrySubtitles(body, baseURL string, ep int) []pageSubtitle {
 		}
 		s := subs[pick]
 		s.Default = true
-		return []pageSubtitle{s}
-	}
-	return nil
+		result = []pageSubtitle{s}
+		return true
+	})
+	return result, matched
 }
 
 // entryEpisodeNumber is the episode number an episode object names
@@ -374,7 +402,11 @@ func isThumbnailTrack(text string) bool {
 // the conversion fails the .vtt is kept. A subtitle that cannot be fetched
 // only logs a warning: the video itself is done.
 func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep int, videos []string, cfg settings) {
-	a.saveSubtitles(ctx, pageEpisodeSubtitles(body, pageURL, ep), pageURL, videos, cfg)
+	a.savePageSubtitlesFor(ctx, body, pageURL, "", ep, videos, cfg)
+}
+
+func (a *app) savePageSubtitlesFor(ctx context.Context, body, pageURL, streamURL string, ep int, videos []string, cfg settings) {
+	a.saveSubtitles(ctx, pageEpisodeSubtitlesFor(body, pageURL, streamURL, ep), pageURL, videos, cfg)
 }
 
 // saveSubtitles fetches subs and saves them next to each video file in videos

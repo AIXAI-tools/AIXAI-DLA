@@ -436,6 +436,12 @@ func (a *app) savedSeqFiles() map[string]seqFile {
 
 // startJobLocked runs a task on its own *app; jobsMu must be held.
 func (a *app) startJobLocked(j *job) {
+	if j.Output != "" && !isFullWindowsPath(j.Output) {
+		j.State = jobFailed
+		j.Message = invalidOutputPathMsg(j.Output)
+		a.saveJobsLocked()
+		return
+	}
 	w := &app{appShared: a.appShared, job: j, cfg: j.Cfg, itemOffset: j.Pos}
 	w.busy.Store(true)
 	j.worker = w
@@ -567,6 +573,9 @@ func (a *app) jobAction(id int, action string) string {
 		j.AutoResume = false
 	case "resume":
 		if j.State == jobPaused || j.State == jobFailed {
+			if j.Output != "" && !isFullWindowsPath(j.Output) {
+				return invalidOutputPathMsg(j.Output)
+			}
 			j.State, j.Message = jobQueued, ""
 		}
 		j.AutoResume = false

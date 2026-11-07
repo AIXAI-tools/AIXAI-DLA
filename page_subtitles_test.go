@@ -3,6 +3,14 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -142,5 +150,224 @@ func TestPageEntrySubtitles(t *testing.T) {
 	}
 	if got := pageEpisodeSubtitles(body, "https://www.example.com/watch/show/3", 3); len(got) != 0 {
 		t.Fatalf("unlisted episode = %#v", got)
+	}
+}
+
+func readTestPage(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func urlPathOnly(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Path
+}
+
+func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
+	t.Run("zh_ep1_prefers_play_url_and_selected_es", func(t *testing.T) {
+		body := readTestPage(t, "page_entry_zh_ep1.html")
+		streams, listed, maxEp := pageEpisodeStreams(body, 1)
+		if !listed || maxEp != 10 || len(streams) != 2 {
+			t.Fatalf("streams=%v listed=%v maxEp=%d", streams, listed, maxEp)
+		}
+		if src := signedStreamSource(urlPathOnly(t, streams[0])); !strings.HasSuffix(src, "/manifest_1080.m3u8") {
+			t.Fatalf("ep1 first stream = %q (src=%q), want play_url manifest_1080.m3u8", streams[0], src)
+		}
+		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=zh-TW", 1)
+		if len(subs) != 1 || subs[0].Lang != "es-ES" || !subs[0].Default {
+			t.Fatalf("zh ep1 subs = %#v, want selected es-ES", subs)
+		}
+	})
+
+	t.Run("en_ep1_prefers_play_url_and_selected_en", func(t *testing.T) {
+		body := readTestPage(t, "page_entry_en_ep1.html")
+		streams, listed, _ := pageEpisodeStreams(body, 1)
+		if !listed || len(streams) != 2 {
+			t.Fatalf("streams=%v listed=%v", streams, listed)
+		}
+		if src := signedStreamSource(urlPathOnly(t, streams[0])); !strings.HasSuffix(src, "/manifest_1080.m3u8") {
+			t.Fatalf("ep1 first stream = %q (src=%q), want play_url manifest_1080.m3u8", streams[0], src)
+		}
+		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", 1)
+		if len(subs) != 1 || subs[0].Lang != "en-US" || !subs[0].Default {
+			t.Fatalf("en ep1 subs = %#v, want selected en-US", subs)
+		}
+		if src := signedStreamSource(urlPathOnly(t, subs[0].URL)); !strings.HasSuffix(src, "/en-US/subtitle.srt") {
+			t.Fatalf("en ep1 sub src = %q, want .../en-US/subtitle.srt", src)
+		}
+	})
+
+	t.Run("ep2_uses_direct_play_url_and_direct_subtitle_url", func(t *testing.T) {
+		for _, file := range []string{"page_entry_zh_ep2.html", "page_entry_en_ep2.html"} {
+			body := readTestPage(t, file)
+			streams, listed, _ := pageEpisodeStreams(body, 2)
+			if !listed || len(streams) != 1 || !strings.HasSuffix(streams[0], "/ep2-18779eeb.mp4") {
+				t.Fatalf("%s ep2 streams = %v", file, streams)
+			}
+			subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/2?lang=zh-TW", 2)
+			if len(subs) != 1 || !subs[0].Default || subs[0].Lang != "" || subs[0].Label != "" {
+				t.Fatalf("%s ep2 subs = %#v, want unnamed default direct_subtitle_url", file, subs)
+			}
+			if !strings.HasPrefix(subs[0].URL, "https://site.example/e/s/") {
+				t.Fatalf("%s ep2 sub URL not resolved against baseURL: %q", file, subs[0].URL)
+			}
+			if src := signedStreamSource(urlPathOnly(t, subs[0].URL)); !strings.HasSuffix(src, "/ep2-18779eeb.vtt") {
+				t.Fatalf("%s ep2 sub src = %q, want suffix /ep2-18779eeb.vtt", file, src)
+			}
+		}
+	})
+
+	t.Run("same_src_ep1_keeps_direct_play_url_and_matches_direct_subtitle", func(t *testing.T) {
+		body := readTestPage(t, "page_entry_same_src_ep1.html")
+		streams, listed, _ := pageEpisodeStreams(body, 1)
+		if !listed || len(streams) != 2 || !strings.HasSuffix(streams[0], "/ep1-a4398125.mp4") {
+			t.Fatalf("same_src ep1 streams = %v, want direct_play_url first", streams)
+		}
+		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", 1)
+		if len(subs) != 1 || !subs[0].Default {
+			t.Fatalf("same_src ep1 subs = %#v", subs)
+		}
+		if src := signedStreamSource(urlPathOnly(t, subs[0].URL)); !strings.HasSuffix(src, "/ep1-a4398125.vtt") {
+			t.Fatalf("same_src ep1 sub src = %q, want direct-matched /ep1-a4398125.vtt", src)
+		}
+	})
+}
+
+func TestDownloadPageEpisodePlayFallbackAndLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		src := signedStreamSource(r.URL.Path)
+		switch {
+		case strings.HasSuffix(src, "/ep1-a4398125.vtt"):
+			io.WriteString(w, "1\n00:00:01,000 --> 00:00:03,000\nDIRECT_EP1_SUB\n")
+		case strings.HasSuffix(src, "/ep2-18779eeb.vtt"):
+			io.WriteString(w, "1\n00:00:01,000 --> 00:00:03,000\nDIRECT_EP2_SUB\n")
+		case strings.HasSuffix(src, "/en-US/subtitle.srt"):
+			io.WriteString(w, "1\n00:00:01,000 --> 00:00:03,000\nPLAY_EN_SUB\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Run("play_url_failure_falls_back_to_direct_play_url_with_paired_subtitle", func(t *testing.T) {
+		body := readTestPage(t, "page_entry_en_ep1.html")
+		outDir := t.TempDir()
+		videoPath := filepath.Join(outDir, "test-drama_E001.mp4")
+		a := testApp(t)
+		var tried []string
+		a.pageStreamDownload = func(ctx context.Context, stream string) ([]string, error) {
+			tried = append(tried, stream)
+			if len(tried) == 1 {
+				return nil, errors.New("HTTP Error 403: Forbidden")
+			}
+			if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+				return nil, err
+			}
+			return []string{videoPath}, nil
+		}
+		pageURL := srv.URL + "/detail/watch/test-drama/1?lang=en-US"
+		found, err := a.downloadPageEpisode(context.Background(), pageURL, pageURL, body, 0, "", outDir, settings{})
+		if !found || err != nil {
+			t.Fatalf("found=%v err=%v", found, err)
+		}
+		if len(tried) != 2 || !strings.Contains(tried[0], "stream.example.com/e/m/") || !strings.HasSuffix(tried[1], "/ep1-a4398125.mp4") {
+			t.Fatalf("tried = %v, want [play_url, direct_play_url]", tried)
+		}
+		logs := strings.Join(a.sessionLog, "")
+		if !strings.Contains(logs, "→ 本集可直接播放，改下載網頁播放器使用的串流（stream.example.com）。") {
+			t.Fatalf("missing player stream log in:\n%s", logs)
+		}
+		if !strings.Contains(logs, "ℹ 頁面播放器的串流無法下載（HTTP Error 403: Forbidden），改用頁面備用串流（cdn.example.net）。") {
+			t.Fatalf("missing fallback info log in:\n%s", logs)
+		}
+		subBytes, err := os.ReadFile(filepath.Join(outDir, "test-drama_E001.srt"))
+		if err != nil {
+			subBytes, err = os.ReadFile(filepath.Join(outDir, "test-drama_E001.vtt"))
+		}
+		if err != nil {
+			t.Fatalf("paired subtitle not saved: %v\nlogs:\n%s", err, logs)
+		}
+		if !strings.Contains(string(subBytes), "DIRECT_EP1_SUB") {
+			t.Fatalf("saved subtitle = %q, want DIRECT_EP1_SUB paired with direct_play_url", string(subBytes))
+		}
+	})
+
+	t.Run("non_B_episode_keeps_identical_log_and_error_types", func(t *testing.T) {
+		body := readTestPage(t, "page_entry_zh_ep2.html")
+		outDir := t.TempDir()
+		videoPath := filepath.Join(outDir, "test-drama_E002.mp4")
+		a := testApp(t)
+		a.pageStreamDownload = func(ctx context.Context, stream string) ([]string, error) {
+			if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+				return nil, err
+			}
+			return []string{videoPath}, nil
+		}
+		pageURL := srv.URL + "/detail/watch/test-drama/2?lang=zh-TW"
+		found, err := a.downloadPageEpisode(context.Background(), pageURL, pageURL, body, 0, "", outDir, settings{})
+		if !found || err != nil {
+			t.Fatalf("found=%v err=%v", found, err)
+		}
+		logs := strings.Join(a.sessionLog, "")
+		wantLine := "→ 頁面播放資料列出各集串流，直接取得第 2 集（cdn.example.net）。\r\n"
+		if !strings.HasPrefix(logs, wantLine) {
+			t.Fatalf("non-B log = %q, want prefix %q", logs, wantLine)
+		}
+
+		// Verify errNoSuchEpisode, errEpisodeWithheld, and errEpisodeDeferred remain unchanged.
+		_, errNoEp := a.downloadPageEpisode(context.Background(), srv.URL+"/detail/watch/test-drama/99", srv.URL, body, 0, "", outDir, settings{})
+		var noEp *errNoSuchEpisode
+		if !errors.As(errNoEp, &noEp) || noEp.ep != 99 || noEp.max != 10 {
+			t.Fatalf("errNoSuchEpisode = %#v", errNoEp)
+		}
+
+		withheldBody := `{"episodes":[{"number":1,"play_url":"","is_playable":false},{"number":2,"play_url":"https://cdn.example.net/2.mp4"},{"number":3,"play_url":"https://cdn.example.net/3.mp4"}]}`
+		a2 := testApp(t)
+		_, errWithheld := a2.downloadPageEpisode(context.Background(), srv.URL+"/watch/show/1", srv.URL, withheldBody, 0, "", outDir, settings{})
+		var wh *errEpisodeWithheld
+		if !errors.As(errWithheld, &wh) || wh.ep != 1 {
+			t.Fatalf("errEpisodeWithheld = %#v", errWithheld)
+		}
+		a3 := testApp(t)
+		a3.deferWithheld = true
+		_, errDef := a3.downloadPageEpisode(context.Background(), srv.URL+"/watch/show/1", srv.URL, withheldBody, 0, "", outDir, settings{})
+		var def *errEpisodeDeferred
+		if !errors.As(errDef, &def) || def.ep != 1 {
+			t.Fatalf("errEpisodeDeferred = %#v", errDef)
+		}
+	})
+}
+
+func TestCandidateURLSubtitleUnchangedWithoutEpisodeEntry(t *testing.T) {
+	// Track-based page and by-episode subtitles map: passing any candidateURL to
+	// pageEpisodeSubtitlesFor must behave identically to pageEpisodeSubtitles.
+	trackPage := `<video><source src="v.mp4"><track kind="subtitles" srclang="zh" label="中文" src="/subs/zh.vtt" default></video>`
+	gotTrack := pageEpisodeSubtitlesFor(trackPage, "https://example.com/watch/1", "https://cdn.example.com/v.mp4", 1)
+	wantTrack := pageEpisodeSubtitles(trackPage, "https://example.com/watch/1", 1)
+	if !reflect.DeepEqual(gotTrack, wantTrack) {
+		t.Fatalf("track page: got %#v, want %#v", gotTrack, wantTrack)
+	}
+
+	byEpPage := `<script>var p = { subtitles: {"2":[{"label":"中文","lang":"zh","src":"/s/2.vtt","isDefault":true}]} };</script>`
+	gotByEp := pageEpisodeSubtitlesFor(byEpPage, "https://example.com/play/9/2", "https://cdn.example.com/2.mp4", 2)
+	wantByEp := pageEpisodeSubtitles(byEpPage, "https://example.com/play/9/2", 2)
+	if !reflect.DeepEqual(gotByEp, wantByEp) {
+		t.Fatalf("by-episode map page: got %#v, want %#v", gotByEp, wantByEp)
+	}
+
+	// Episode object without direct_play_url: candidateURL must not alter multi_subtitles selection.
+	entryNoDirect := `<script>var d={"episodes":[{"number":1,"play_url":"https:\/\/cdn.example.com\/1.m3u8","multi_subtitles":[{"language_code":"zh-TW","label":"繁體中文","subtitle_url":"\/e\/s\/1-zh","is_default":true}]}]};</script>`
+	gotNoDirect := pageEpisodeSubtitlesFor(entryNoDirect, "https://example.com/watch/show/1", "https://other.example.com/cand.m3u8", 1)
+	wantNoDirect := pageEpisodeSubtitles(entryNoDirect, "https://example.com/watch/show/1", 1)
+	if !reflect.DeepEqual(gotNoDirect, wantNoDirect) {
+		t.Fatalf("entry without direct_play_url: got %#v, want %#v", gotNoDirect, wantNoDirect)
 	}
 }

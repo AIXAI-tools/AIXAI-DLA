@@ -184,6 +184,9 @@ func (a *app) retryFailed(ids []int) string {
 		return "清單中沒有可重試的網址。"
 	}
 	for _, g := range groups {
+		if g.first.Output != "" && !isFullWindowsPath(g.first.Output) {
+			return invalidOutputPathMsg(g.first.Output)
+		}
 		cfg := g.first.Cfg
 		// Each address is retried as it is; a sequence range was already
 		// expanded into these addresses. A 連續集數 task keeps its naming,

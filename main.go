@@ -32,7 +32,7 @@ import (
 
 const (
 	appTitle   = "AIXAI 萬能下載工具"
-	appVersion = "4.2.34"
+	appVersion = "4.2.35"
 
 	ytDlpURL               = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.exe"
 	ytDlpChecksumURL       = "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/SHA2-256SUMS"
@@ -632,6 +632,9 @@ type app struct {
 	// during this job (page_episodes.go), used when their turn comes.
 	freshMu      sync.Mutex
 	freshStreams []freshEpisodeStream
+	// pageStreamDownload is an optional test hook used by downloadPageEpisode
+	// unit tests; nil in production.
+	pageStreamDownload func(ctx context.Context, stream string) ([]string, error)
 
 	busy          atomic.Bool
 	stopRequested atomic.Bool
@@ -2655,7 +2658,7 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 	// check sends the loop on to the next candidate. A video that passed gets
 	// the page's separate subtitle files (page_subtitles.go).
 	ep, epTitle := pageEpisodeNumber(rawURL), pageEpisodeTitle(rawURL, body)
-	try := func(run func() error) error {
+	try := func(candidateURL string, run func() error) error {
 		a.resetOutputs()
 		done := len(a.itemFiles)
 		err := run()
@@ -2663,25 +2666,20 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 			err = a.finishStep(ctx, mode, cfg, true)
 		}
 		if err == nil && !a.stopRequested.Load() {
-			a.savePageSubtitles(ctx, body, finalURL, ep, a.itemFiles[done:], cfg)
+			a.savePageSubtitlesFor(ctx, body, finalURL, candidateURL, ep, a.itemFiles[done:], cfg)
 		}
 		return err
 	}
 	a.resetOutputs()
-	done := len(a.itemFiles)
 	if found, err := a.downloadPageEpisode(ctx, rawURL, finalURL, body, mode, formatID, output, cfg); found {
 		if err == nil && !a.stopRequested.Load() {
-			err = a.finishStep(ctx, mode, cfg, true)
-		}
-		if err == nil && !a.stopRequested.Load() {
-			a.savePageSubtitles(ctx, body, finalURL, ep, a.itemFiles[done:], cfg)
-		}
-		if err == nil {
 			a.postLog("✓ 已從頁面播放資料下載本集。\r\n")
 			a.diagNote("頁面分集資料 ✓")
 			return nil
 		}
-		a.diagNote("頁面分集資料 ✗ " + diagErrorText(err))
+		if err != nil {
+			a.diagNote("頁面分集資料 ✗ " + diagErrorText(err))
+		}
 		if a.stopRequested.Load() {
 			return errStopped
 		}
@@ -2711,7 +2709,7 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 			return errStopped
 		}
 		a.postLog(fmt.Sprintf("→ 候選 %d/%d [%s]：%s\r\n", i+1, limit, c.Kind, c.URL))
-		if err := try(func() error {
+		if err := try(c.URL, func() error {
 			return a.tryWebCandidate(ctx, c.URL, finalURL, rawURL, epTitle, mode, formatID, output, cfg)
 		}); err == nil {
 			a.postLog("✓ 網頁嵌入媒體候選下載成功。\r\n")
@@ -2740,7 +2738,7 @@ func (a *app) runGenericWebPageFallback(ctx context.Context, rawURL string, mode
 						continue
 					}
 					a.postLog(fmt.Sprintf("  ↳ 內嵌候選 %d/%d：%s\r\n", j+1, nestedLimit, n.URL))
-					if err := try(func() error {
+					if err := try(n.URL, func() error {
 						return a.tryWebCandidate(ctx, n.URL, nestedFinal, rawURL, epTitle, mode, formatID, output, cfg)
 					}); err == nil {
 						a.diagNote(fmt.Sprintf("內嵌候選 %d/%d ✓ %s", j+1, nestedLimit, diagMediaURL(n.URL)))

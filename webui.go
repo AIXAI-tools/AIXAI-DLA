@@ -563,6 +563,9 @@ func (a *app) startFromUI(req startRequest) startResponse {
 	if output == "" {
 		return startResponse{Error: "請選擇儲存位置。", Field: "output"}
 	}
+	if err := validateStartOutput(req.Output); err != "" {
+		return startResponse{Error: err, Field: "output"}
+	}
 	if req.Mode != 3 {
 		if err := os.MkdirAll(output, 0755); err != nil {
 			return startResponse{Error: "無法建立儲存資料夾：" + err.Error(), Field: "output"}

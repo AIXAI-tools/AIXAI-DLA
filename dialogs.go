@@ -218,6 +218,9 @@ func (a *app) openFolder(path string) string {
 	if path == "" {
 		return "尚未設定儲存位置。"
 	}
+	if !isFullWindowsPath(path) {
+		return invalidOutputPathMsg(path)
+	}
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return "無法開啟資料夾：" + err.Error()
 	}

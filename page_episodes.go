@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -29,9 +30,10 @@ var (
 	pageOpaqueStreamRE = regexp.MustCompile(`"(?:direct_play_url|directPlayUrl|play_url|playUrl|stream_url|streamUrl|hls_url|hlsUrl)"\s*:\s*"(https?:[^"]+)"`)
 	// pageEmptyStreamRE: an episode the list names but gives no stream for
 	// (the site holds it back, e.g. until it is unlocked on the site).
-	pageEmptyStreamRE = regexp.MustCompile(`"(?:play_url|playUrl)"\s*:\s*(?:""|null)`)
-	pageTitleRE       = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	jsonEscapeRE      = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	pageEmptyStreamRE  = regexp.MustCompile(`"(?:play_url|playUrl)"\s*:\s*(?:""|null)`)
+	episodeObjectKeyRE = regexp.MustCompile(`"(?:direct_play_url|directPlayUrl|play_url|playUrl|multi_subtitles|subtitles|direct_subtitle_url|directSubtitleUrl)"\s*:`)
+	pageTitleRE        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	jsonEscapeRE       = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
 )
 
 // unescapeJSONText decodes \uXXXX escapes left in a URL copied out of JSON
@@ -164,6 +166,104 @@ func signedStreamSource(path string) string {
 	return ""
 }
 
+// streamSourceURL unwraps a signed proxy address (/e/m/<token> or /e/s/<token>)
+// to the underlying "src" URL in its token, or returns raw unchanged.
+func streamSourceURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if src := signedStreamSource(u.Path); src != "" {
+		if resolved := resolveCandidateURL(raw, src); resolved != "" {
+			return resolved
+		}
+		return src
+	}
+	return raw
+}
+
+// sameMediaFile reports whether two media or subtitle addresses refer to the
+// same underlying file (unwrapping any signed proxy token on either side first,
+// then comparing host and path).
+func sameMediaFile(a, b string) bool {
+	ua, err1 := url.Parse(streamSourceURL(a))
+	ub, err2 := url.Parse(streamSourceURL(b))
+	if err1 != nil || err2 != nil || ua.Path == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host) && ua.Path == ub.Path
+}
+
+func episodeObjectString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func episodeObjectBool(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if b, ok := m[k].(bool); ok && b {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanHTTPURL(s string) string {
+	s = strings.TrimSpace(html.UnescapeString(unescapeJSONText(strings.ReplaceAll(s, `\/`, `/`))))
+	if u, err := url.Parse(s); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return s
+	}
+	return ""
+}
+
+// episodeJSONObjects walks each episode JSON object in body whose episode
+// number equals ep, stopping early when fn returns true.
+func episodeJSONObjects(body string, ep int, fn func(map[string]any) bool) {
+	if ep <= 0 {
+		return
+	}
+	seenStart := map[int]bool{}
+	for _, loc := range episodeObjectKeyRE.FindAllStringIndex(body, 4000) {
+		start := enclosingObjectStart(body, loc[0])
+		if start < 0 || seenStart[start] {
+			continue
+		}
+		seenStart[start] = true
+		obj := balancedObject(body, start)
+		var m map[string]any
+		if obj == "" || json.Unmarshal([]byte(obj), &m) != nil || entryEpisodeNumber(m) != ep {
+			continue
+		}
+		if fn(m) {
+			return
+		}
+	}
+}
+
+// episodeObjectStreams extracts play_url and direct_play_url from one episode
+// JSON object and reports whether play_url should be preferred (is_playable is
+// true, play_url is non-empty, and play_url does not point to the same media
+// file as direct_play_url).
+func episodeObjectStreams(m map[string]any) (playURL, directPlayURL string, preferPlay bool) {
+	playURL = cleanHTTPURL(episodeObjectString(m, "play_url", "playUrl"))
+	directPlayURL = cleanHTTPURL(episodeObjectString(m, "direct_play_url", "directPlayUrl"))
+	isPlayable := episodeObjectBool(m, "is_playable", "isPlayable")
+	preferPlay = isPlayable && playURL != "" && (directPlayURL == "" || !sameMediaFile(playURL, directPlayURL))
+	return playURL, directPlayURL, preferPlay
+}
+
+func lookupEpisodeObjectStreams(body string, ep int) (playURL, directPlayURL string, preferPlay bool) {
+	episodeJSONObjects(body, ep, func(m map[string]any) bool {
+		playURL, directPlayURL, preferPlay = episodeObjectStreams(m)
+		return playURL != "" || directPlayURL != ""
+	})
+	return playURL, directPlayURL, preferPlay
+}
+
 type pageEpisodeEntry struct {
 	Episode int
 	Stream  string
@@ -280,7 +380,28 @@ func pageEpisodeStreams(body string, ep int) (streams []string, listed bool, max
 			streams = append(streams, e.Stream)
 		}
 	}
-	return append(streams, opaque...), true, maxEp
+	all := append(streams, opaque...)
+	if playURL, directPlayURL, preferPlay := lookupEpisodeObjectStreams(body, ep); preferPlay && len(all) > 0 {
+		var ordered []string
+		addUnique := func(u string) {
+			if u == "" {
+				return
+			}
+			for _, existing := range ordered {
+				if existing == u {
+					return
+				}
+			}
+			ordered = append(ordered, u)
+		}
+		addUnique(playURL)
+		addUnique(directPlayURL)
+		for _, s := range all {
+			addUnique(s)
+		}
+		return ordered, true, maxEp
+	}
+	return all, true, maxEp
 }
 
 // errNoSuchEpisode: the page lists the series' episodes and this one is not
@@ -368,34 +489,87 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		}
 		return true, &errNoSuchEpisode{ep: ep, max: maxEp}
 	}
-	stream := streams[0]
 	// Remember the listed streams: if they cannot be fetched directly, the
 	// capture browser uses them to tell this episode apart from preloaded
 	// neighbours, and never takes another episode's stream for this one.
 	_, others := pageEpisodeListed(body, ep)
 	a.pageEpisodeHint = pageEpisodeHint{Page: rawURL, Streams: streams, Others: others}
+
+	streamMode := mode
+	if mode == 2 {
+		streamMode = 0
+	}
+	runOne := func(target string) ([]string, error) {
+		a.resetOutputs()
+		done := len(a.itemFiles)
+		if a.pageStreamDownload != nil {
+			return a.pageStreamDownload(ctx, target)
+		}
+		args, err := a.buildArgs(target, streamMode, formatID, output, cfg)
+		if err != nil {
+			return nil, err
+		}
+		args = replaceOutputTemplate(args, a.outputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
+		extras := []string{"--no-playlist", "--referer", finalURL, "--impersonate", "chrome"}
+		headers := map[string]string{"referer": finalURL, "user-agent": chromeUserAgent}
+		if base, err := url.Parse(finalURL); err == nil && base.Scheme != "" && base.Host != "" {
+			extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
+			headers["origin"] = base.Scheme + "://" + base.Host
+		}
+		args = a.applyHLSTracks(ctx, args, streamMode, cfg, rawURL, target, headers)
+		args = insertBeforeLast(args, extras...)
+		err = a.runCommand(ctx, args)
+		if err == nil && !a.stopRequested.Load() {
+			err = a.finishStep(ctx, mode, cfg, true)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return a.itemFiles[done:], nil
+	}
+
+	playURL, directPlayURL, preferPlay := lookupEpisodeObjectStreams(body, ep)
+	if preferPlay && directPlayURL != "" {
+		primary := playURL
+		if fresh := a.freshStreamFor([]string{playURL}); fresh != "" {
+			primary = fresh
+			a.postLog(fmt.Sprintf("→ 使用先前播放其他集時瀏覽器預先載入的第 %d 集串流（%s；網頁資料中的連結可能已過期）。\r\n", ep, hostOnly(primary)))
+		} else {
+			a.postLog(fmt.Sprintf("→ 本集可直接播放，改下載網頁播放器使用的串流（%s）。\r\n", hostOnly(primary)))
+		}
+		videos, err := runOne(primary)
+		if err == nil {
+			if !a.stopRequested.Load() {
+				a.savePageSubtitlesFor(ctx, body, finalURL, primary, ep, videos, cfg)
+			}
+			return true, nil
+		}
+		if a.stopRequested.Load() || errors.Is(err, errStopped) || ctx.Err() != nil {
+			return true, err
+		}
+		fallback := directPlayURL
+		if fresh := a.freshStreamFor([]string{directPlayURL}); fresh != "" {
+			fallback = fresh
+		}
+		a.postLog(fmt.Sprintf("ℹ 頁面播放器的串流無法下載（%s），改用頁面備用串流（%s）。\r\n", firstLine(err.Error()), hostOnly(fallback)))
+		a.diagNote("播放器串流失敗，改用頁面備用串流：" + diagErrorText(err))
+		videos, fbErr := runOne(fallback)
+		if fbErr == nil && !a.stopRequested.Load() {
+			a.savePageSubtitlesFor(ctx, body, finalURL, fallback, ep, videos, cfg)
+		}
+		return true, fbErr
+	}
+
+	stream := streams[0]
 	if fresh := a.freshStreamFor(streams); fresh != "" {
 		stream = fresh
 		a.postLog(fmt.Sprintf("→ 使用先前播放其他集時瀏覽器預先載入的第 %d 集串流（%s；網頁資料中的連結可能已過期）。\r\n", ep, hostOnly(stream)))
 	} else {
 		a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
 	}
-	streamMode := mode
-	if mode == 2 {
-		streamMode = 0
+	videos, err := runOne(stream)
+	if err == nil && !a.stopRequested.Load() {
+		a.savePageSubtitlesFor(ctx, body, finalURL, stream, ep, videos, cfg)
 	}
-	args, err := a.buildArgs(stream, streamMode, formatID, output, cfg)
-	if err != nil {
-		return true, err
-	}
-	args = replaceOutputTemplate(args, a.outputBase(rawURL, pageEpisodeTitle(rawURL, body))+".%(ext)s")
-	extras := []string{"--no-playlist", "--referer", finalURL, "--impersonate", "chrome"}
-	headers := map[string]string{"referer": finalURL, "user-agent": chromeUserAgent}
-	if base, err := url.Parse(finalURL); err == nil && base.Scheme != "" && base.Host != "" {
-		extras = append(extras, "--add-header", "Origin:"+base.Scheme+"://"+base.Host)
-		headers["origin"] = base.Scheme + "://" + base.Host
-	}
-	args = a.applyHLSTracks(ctx, args, streamMode, cfg, rawURL, stream, headers)
-	args = insertBeforeLast(args, extras...)
-	return true, a.runCommand(ctx, args)
+	return true, err
 }
