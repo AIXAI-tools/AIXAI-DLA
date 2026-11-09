@@ -174,6 +174,7 @@ func pageEpisodeSubtitlesFor(body, baseURL, streamURL string, ep int) []pageSubt
 //   - 下載 play_url 那支 → 用 multi_subtitles／subtitles（依 selected → 網址 lang → 預設 → 第一個）。
 //   - 下載 direct_play_url 那支 → multi_subtitles／subtitles 裡 subtitle_url 的 src 與
 //     direct_subtitle_url 相同的那一項優先，沒有就用 direct_subtitle_url（語言未知則不加標籤）。
+//   - 兩支是同一個檔案且頁面有字幕清單 → 視為 play_url 那支。
 func pageEntrySubtitles(body, baseURL, streamURL string, ep int) ([]pageSubtitle, bool) {
 	if ep <= 0 {
 		return nil, false
@@ -214,7 +215,10 @@ func pageEntrySubtitles(body, baseURL, streamURL string, ep int) ([]pageSubtitle
 		} else {
 			useDirect = directPlayURL != "" && !preferPlay
 		}
-		if useDirect {
+		// play_url 與 direct_play_url 是同一支檔案時，就是播放器在播的那支：
+		// direct_subtitle_url 只是網站的預設語言，要照頁面選定的語言。
+		samePlay := playURL != "" && directPlayURL != "" && sameMediaFile(playURL, directPlayURL)
+		if useDirect && !(samePlay && len(subs) > 0) {
 			if directSub != "" {
 				for _, s := range subs {
 					if sameMediaFile(s.URL, directSub) {

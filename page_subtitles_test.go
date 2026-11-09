@@ -225,7 +225,7 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 		}
 	})
 
-	t.Run("same_src_ep1_keeps_direct_play_url_and_matches_direct_subtitle", func(t *testing.T) {
+	t.Run("same_src_ep1_keeps_direct_play_url_and_uses_selected_language", func(t *testing.T) {
 		body := readTestPage(t, "page_entry_same_src_ep1.html")
 		streams, listed, _ := pageEpisodeStreams(body, 1)
 		if !listed || len(streams) != 2 || !strings.HasSuffix(streams[0], "/ep1-a4398125.mp4") {
@@ -235,10 +235,41 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 		if len(subs) != 1 || !subs[0].Default {
 			t.Fatalf("same_src ep1 subs = %#v", subs)
 		}
-		if src := signedStreamSource(urlPathOnly(t, subs[0].URL)); !strings.HasSuffix(src, "/ep1-a4398125.vtt") {
-			t.Fatalf("same_src ep1 sub src = %q, want direct-matched /ep1-a4398125.vtt", src)
+		if src := signedStreamSource(urlPathOnly(t, subs[0].URL)); subs[0].Lang != "en-US" || !strings.HasSuffix(src, "/en-US/subtitle.srt") {
+			t.Fatalf("same_src ep1 sub lang=%q src=%q, want selected en-US", subs[0].Lang, src)
 		}
 	})
+}
+
+// play_url 與 direct_play_url 是同一支檔案：direct_subtitle_url 只是網站預設語言，
+// 字幕要照頁面選定的語言；字幕清單是空的才用 direct_subtitle_url。
+func TestPageEntrySameFileUsesSelectedLanguage(t *testing.T) {
+	const stream = "https://cdn.example.com/drama/en/1_.m3u8"
+	const direct = "https://sub.example.org/drama/pt/ep1.vtt"
+	entry := func(selected, list string) string {
+		return `<script>var d={"episodes":[{"route_episode_number":1,"number":1,"is_playable":true,` +
+			`"play_url":"` + stream + `","direct_play_url":"` + stream + `","direct_subtitle_url":"` + direct + `",` +
+			`"selected_subtitle_language":"` + selected + `","multi_subtitles":[` + list + `]}]};</script>`
+	}
+	const list = `{"language_code":"pt-PT","label":"português","subtitle_url":"` + direct + `","is_default":true},` +
+		`{"language_code":"en-US","label":"English","subtitle_url":"https://sub.example.org/drama/en/ep1.vtt","is_default":false}`
+	const page = "https://site.example/detail/watch/test-drama/1?lang=en-US"
+
+	for _, tc := range []struct {
+		name, body, stream, wantURL string
+	}{
+		{"selected_language", entry("en-US", list), stream, "https://sub.example.org/drama/en/ep1.vtt"},
+		{"address_language", entry("", list), stream, "https://sub.example.org/drama/en/ep1.vtt"},
+		{"no_stream_given", entry("en-US", list), "", "https://sub.example.org/drama/en/ep1.vtt"},
+		{"empty_list_keeps_direct_subtitle", entry("en-US", ""), stream, direct},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			subs := pageEpisodeSubtitlesFor(tc.body, page, tc.stream, 1)
+			if len(subs) != 1 || !subs[0].Default || subs[0].URL != tc.wantURL {
+				t.Fatalf("subs = %#v, want default %s", subs, tc.wantURL)
+			}
+		})
+	}
 }
 
 func TestDownloadPageEpisodePlayFallbackAndLogs(t *testing.T) {
