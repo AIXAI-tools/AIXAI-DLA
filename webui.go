@@ -327,6 +327,7 @@ type startRequest struct {
 	NoPlaylist     bool   `json:"noPlaylist"`
 	PlaylistFolder bool   `json:"playlistFolder"`
 	ConvertH264    bool   `json:"convertH264"`
+	SubtitlesOnly  bool   `json:"subtitlesOnly"`
 	ExtraArgs      string `json:"extraArgs"`
 	CookieBrowser  string `json:"cookieBrowser"`
 	CookieFile     string `json:"cookieFile"`
@@ -472,6 +473,7 @@ func (a *app) applyRequestToSettings(req startRequest) {
 	a.cfg.NoPlaylist = req.NoPlaylist
 	a.cfg.PlaylistFolder = req.PlaylistFolder
 	a.cfg.ConvertH264 = req.ConvertH264
+	a.cfg.SubtitlesOnly = req.SubtitlesOnly
 	a.cfg.ExtraArgs = req.ExtraArgs
 	if req.CookieBrowser == "cookiefile" {
 		a.cfg.CookieBrowser = "auto"
@@ -555,8 +557,12 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		urls = expanded
 		notes = append(notes, fmt.Sprintf("✓ 已建立連續序號下載：%d ～ %d，共 %d 個網址。\r\n", req.SequenceStart, req.SequenceEnd, len(urls)))
 	}
+	effectiveMode := req.Mode
+	if req.SubtitlesOnly {
+		effectiveMode = 0
+	}
 	formatID := strings.TrimSpace(req.FormatID)
-	if req.Mode == 4 && formatID == "" {
+	if effectiveMode == 4 && formatID == "" {
 		return startResponse{Error: "請輸入格式 ID，例如 136 或 136+bestaudio/best。", Field: "formatId"}
 	}
 	output := strings.TrimSpace(req.Output)
@@ -566,7 +572,7 @@ func (a *app) startFromUI(req startRequest) startResponse {
 	if err := validateStartOutput(req.Output); err != "" {
 		return startResponse{Error: err, Field: "output"}
 	}
-	if req.Mode != 3 {
+	if effectiveMode != 3 {
 		if err := os.MkdirAll(output, 0755); err != nil {
 			return startResponse{Error: "無法建立儲存資料夾：" + err.Error(), Field: "output"}
 		}
@@ -580,7 +586,7 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		if len(urls) > 1 {
 			return startResponse{Error: "自訂檔名只能用在單一網址；要一次下載多個網址，請先清空檔名。", Field: "fileName"}
 		}
-		if req.Mode == 2 || isCollectionURL(urls[0]) {
+		if effectiveMode == 2 || isCollectionURL(urls[0]) {
 			return startResponse{Error: "播放清單會下載多部影片，不能自訂檔名；請先清空檔名。", Field: "fileName"}
 		}
 		if fileName = customFileName(req.FileName, output); fileName == "" {
@@ -604,7 +610,7 @@ func (a *app) startFromUI(req startRequest) startResponse {
 		cfg.SeriesName = safeWindowsBaseName(req.SeriesName)
 	}
 	cfg.FileName = fileName
-	j := a.addJob(urls, req.Mode, formatID, output, cfg, notes)
+	j := a.addJob(urls, effectiveMode, formatID, output, cfg, notes)
 	a.resumePath = ""
 	return startResponse{URLs: urls, JobID: j.ID}
 }

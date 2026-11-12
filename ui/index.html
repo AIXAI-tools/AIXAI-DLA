@@ -141,6 +141,9 @@ textarea:focus,input:focus,select:focus{outline:none;border-color:var(--accent);
   display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);
   background:var(--surface-2);min-height:44px;
 }
+#subsOnlyBox{width:fit-content;max-width:100%;min-height:0;padding:4px 8px;gap:6px;margin-bottom:10px}
+#subsOnlyBox label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+#modeBox.dim{opacity:.45}
 .opt input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);margin:0;flex:none}
 .opt label{white-space:nowrap;cursor:pointer}
 .opt .t{font-weight:600}
@@ -437,8 +440,13 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
           <div class="s" id="epPreview"></div>
         </div>
 
+        <div class="opt" id="subsOnlyBox">
+          <input type="checkbox" id="subsOnly">
+          <label for="subsOnly"><span class="t">只下載字幕檔</span> <span class="s">不下載影片，只存 .srt</span></label>
+        </div>
+
         <div class="grid2 field">
-          <div>
+          <div id="modeBox">
             <label class="f" for="mode">處理方式</label>
             <select id="mode"></select>
             <div id="formatBox" class="hidden" style="margin-top:8px">
@@ -458,6 +466,7 @@ dialog::backdrop{background:rgba(10,14,20,.45)}
             <div class="err-text" id="err-output"></div>
           </div>
         </div>
+        <div class="s hidden" id="subsOnlyHint" style="margin:-2px 0 10px;line-height:1.5">只下載字幕時不使用「處理方式」。字幕燒在畫面上的影片沒有字幕檔；要看廣告解鎖的集數，一樣要先解鎖。</div>
 
         <details class="adv" id="adv">
           <summary><span class="chev">▸</span> 進階設定 <span class="sum" id="advSum"></span></summary>
@@ -749,6 +758,7 @@ function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt
 function collect(){
   return {
     urls:$("urls").value, mode:+$("mode").value, formatId:$("formatId").value, output:$("output").value.trim(),
+    subtitlesOnly:$("subsOnly").checked,
     sequence:$("sequence").checked, sequenceStart:+$("seqStart").value||0, sequenceEnd:+$("seqEnd").value||0,
     seriesName:$("seriesName").value.trim(), fileName:$("fileName").disabled?"":$("fileName").value.trim(), episodeFormat:$("epFormat").value, episodeSep:$("epSep").value,
     safe:$("safe").checked, noPlaylist:$("noPlaylist").checked, playlistFolder:$("playlistFolder").checked, convertH264:$("convertH264").checked,
@@ -758,7 +768,12 @@ function collect(){
 }
 function saveSoon(){ clearTimeout(state.saveTimer); state.saveTimer=setTimeout(()=>window.goSaveSettings&&goSaveSettings(collect()),400); }
 function refreshDependent(){
-  $("formatBox").classList.toggle("hidden", $("mode").value !== "4");
+  const subsOnly=$("subsOnly").checked;
+  $("mode").disabled=subsOnly;
+  $("modeBox").classList.toggle("dim", subsOnly);
+  $("formatBox").classList.toggle("hidden", subsOnly || $("mode").value !== "4");
+  $("subsOnlyHint").classList.toggle("hidden", !subsOnly);
+  $("goLabel").textContent=subsOnly ? "開始下載字幕" : "開始下載";
   $("cookieBox").classList.toggle("hidden", $("login").value !== "cookiefile");
   const parts=[];
   const lo=$("login"); if(lo.value!=="auto") parts.push(lo.options[lo.selectedIndex].text.replace("…",""));
@@ -773,7 +788,7 @@ function refreshDependent(){
   fn.disabled=many;
   fn.placeholder=many?"自訂檔名只能用在單一網址":"自訂檔名（留空＝用影片標題）";
   $("epSep").disabled = !$("epFormat").value;
-  $("epPreview").textContent = "檔名範例："+episodeName(+$("seqStart").value||1)+".mp4";
+  $("epPreview").textContent = "檔名範例："+episodeName(+$("seqStart").value||1)+(subsOnly?".srt":".mp4");
 }
 function urlCount(){ return $("urls").value.split(/\r?\n/).filter(l=>l.trim() && !l.trim().startsWith("#")).length; }
 const EP_FORMATS={zh:n=>`第${n}集`,E:n=>`E${n}`,EP:n=>`EP${n}`,Episode:n=>`Episode ${n}`};
@@ -784,7 +799,7 @@ function episodeName(ep){
   if(!f) return `${name}_E${n}`;
   const sep=EP_SEPS[$("epSep").value]; return name+(sep==null?" ":sep)+f(n);
 }
-["mode","login","capBrowser","sequence","seqStart","seqEnd","epFormat","epSep","safe","noPlaylist","playlistFolder","convertH264","extra","output","formatId","maxJobs"].forEach(id=>{
+["subsOnly","mode","login","capBrowser","sequence","seqStart","seqEnd","epFormat","epSep","safe","noPlaylist","playlistFolder","convertH264","extra","output","formatId","maxJobs"].forEach(id=>{
   $(id).addEventListener("input",()=>{refreshDependent();saveSoon();});
   $(id).addEventListener("change",()=>{refreshDependent();saveSoon();});
 });
@@ -814,7 +829,7 @@ function fillForm(init){
   $("sequence").checked=!!s.sequence; $("seqStart").value=s.sequence_start||1; $("seqEnd").value=s.sequence_end||50;
   $("epFormat").value=s.episode_format||""; if($("epFormat").selectedIndex<0) $("epFormat").value="";
   $("epSep").value=s.episode_sep||"space"; if($("epSep").selectedIndex<0) $("epSep").value="space";
-  $("safe").checked=!s.unsafe_mode; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder; $("convertH264").checked=!!s.convert_h264;
+  $("safe").checked=!s.unsafe_mode; $("subsOnly").checked=!!s.subtitles_only; $("noPlaylist").checked=!!s.no_playlist; $("playlistFolder").checked=!!s.playlist_folder; $("convertH264").checked=!!s.convert_h264;
   $("extra").value=s.extra_args||"";
   if(s.cookie_file){$("login").value="cookiefile";$("cookieFile").value=s.cookie_file;} else {$("login").value=s.cookie_browser||"auto";}
   $("capBrowser").value=s.capture_browser||"default"; if($("capBrowser").selectedIndex<0) $("capBrowser").value="default";

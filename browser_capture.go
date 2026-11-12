@@ -672,6 +672,9 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 	if len(subs) > 0 {
 		a.diagNote(fmt.Sprintf("頁面字幕：%d 個", len(subs)))
 	}
+	if cfg.SubtitlesOnly {
+		return a.captureSubtitlesOnly(ctx, rawURL, candidate, pageTitle, output, cfg)
+	}
 	candidate = a.upgradeToBestVariant(candidate, mode)
 	// download fetches one captured stream and checks the file.
 	download := func(c browserMediaCandidate) error {

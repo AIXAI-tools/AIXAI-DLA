@@ -500,6 +500,9 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		streamMode = 0
 	}
 	runOne := func(target string) ([]string, error) {
+		if cfg.SubtitlesOnly {
+			return nil, a.saveEpisodeSubtitlesOnly(ctx, rawURL, finalURL, body, target, ep, output, cfg)
+		}
 		a.resetOutputs()
 		done := len(a.itemFiles)
 		if a.pageStreamDownload != nil {
@@ -539,10 +542,13 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		}
 		videos, err := runOne(primary)
 		if err == nil {
-			if !a.stopRequested.Load() {
+			if !a.stopRequested.Load() && !cfg.SubtitlesOnly {
 				a.savePageSubtitlesFor(ctx, body, finalURL, primary, ep, videos, cfg)
 			}
 			return true, nil
+		}
+		if cfg.SubtitlesOnly {
+			return true, err
 		}
 		if a.stopRequested.Load() || errors.Is(err, errStopped) || ctx.Err() != nil {
 			return true, err
@@ -554,7 +560,7 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		a.postLog(fmt.Sprintf("ℹ 頁面播放器的串流無法下載（%s），改用頁面備用串流（%s）。\r\n", firstLine(err.Error()), hostOnly(fallback)))
 		a.diagNote("播放器串流失敗，改用頁面備用串流：" + diagErrorText(err))
 		videos, fbErr := runOne(fallback)
-		if fbErr == nil && !a.stopRequested.Load() {
+		if fbErr == nil && !a.stopRequested.Load() && !cfg.SubtitlesOnly {
 			a.savePageSubtitlesFor(ctx, body, finalURL, fallback, ep, videos, cfg)
 		}
 		return true, fbErr
@@ -568,7 +574,7 @@ func (a *app) downloadPageEpisode(ctx context.Context, rawURL, finalURL, body st
 		a.postLog(fmt.Sprintf("→ 頁面播放資料列出各集串流，直接取得第 %d 集（%s）。\r\n", ep, hostOnly(stream)))
 	}
 	videos, err := runOne(stream)
-	if err == nil && !a.stopRequested.Load() {
+	if err == nil && !a.stopRequested.Load() && !cfg.SubtitlesOnly {
 		a.savePageSubtitlesFor(ctx, body, finalURL, stream, ep, videos, cfg)
 	}
 	return true, err

@@ -779,10 +779,17 @@ func (a *app) setJobItem(index int, state, message string) (named bool) {
 		if state == "done" && a.job.Name == "" {
 			// itemFiles: the checked files of this item (as in the download history)
 			for _, f := range append(append([]string(nil), a.itemFiles...), a.outputs...) {
-				if mediaExts[strings.ToLower(filepath.Ext(f))] {
+				ext := strings.ToLower(filepath.Ext(f))
+				if mediaExts[ext] {
 					a.job.Name = jobNameFromFile(f)
 					named = a.job.Name != ""
 					break
+				} else if ext == ".srt" || ext == ".vtt" {
+					if name := jobNameFromSubtitleFile(f); name != "" {
+						a.job.Name = name
+						named = true
+						break
+					}
 				}
 			}
 		}

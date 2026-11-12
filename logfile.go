@@ -170,7 +170,11 @@ func (a *app) logTaskHeader(urls []string, mode int, formatID string, cfg settin
 	var b strings.Builder
 	b.WriteString("────────── 任務資訊 ──────────\r\n")
 	b.WriteString("程式版本：" + appTitle + " v" + appVersion + "\r\n")
-	b.WriteString("處理方式：" + name + "\r\n")
+	if cfg.SubtitlesOnly {
+		b.WriteString("處理方式：只下載字幕（不下載影片）\r\n")
+	} else {
+		b.WriteString("處理方式：" + name + "\r\n")
+	}
 	if strings.TrimSpace(formatID) != "" {
 		b.WriteString("格式 ID：" + formatID + "\r\n")
 	}

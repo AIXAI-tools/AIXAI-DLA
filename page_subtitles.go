@@ -416,28 +416,34 @@ func (a *app) savePageSubtitlesFor(ctx context.Context, body, pageURL, streamURL
 // saveSubtitles fetches subs and saves them next to each video file in videos
 // (audio files are skipped).
 func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL string, videos []string, cfg settings) {
+	a.saveSubtitlesAt(ctx, subs, pageURL, videoBaseNames(videos), cfg)
+}
+
+func videoBaseNames(videos []string) []string {
+	var bases []string
+	for _, v := range videos {
+		ext := strings.ToLower(filepath.Ext(v))
+		if mediaExts[ext] && !audioExts[ext] && validFile(v, 1) {
+			bases = append(bases, strings.TrimSuffix(v, filepath.Ext(v)))
+		}
+	}
+	return bases
+}
+
+func (a *app) saveSubtitlesAt(ctx context.Context, subs []pageSubtitle, pageURL string, bases []string, cfg settings) []savedSubtitle {
 	subs = fetchableSubtitles(subs)
 	if len(subs) == 0 {
 		subs = a.hlsSubs
 	}
-	if len(subs) == 0 {
-		return
-	}
-	var targets []string
-	for _, v := range videos {
-		ext := strings.ToLower(filepath.Ext(v))
-		if mediaExts[ext] && !audioExts[ext] && validFile(v, 1) {
-			targets = append(targets, v)
-		}
-	}
-	if len(targets) == 0 {
-		return
+	if len(subs) == 0 || len(bases) == 0 {
+		return nil
 	}
 	names := subtitleNames("", subs)
+	var out []savedSubtitle
 	saved := 0
 	for i, s := range subs {
 		if a.stopRequested.Load() {
-			return
+			return out
 		}
 		var text string
 		var err error
@@ -457,8 +463,8 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 			continue
 		}
 		ext := subtitleExt(s.URL, text)
-		for _, v := range targets {
-			base := strings.TrimSuffix(v, filepath.Ext(v)) + names[i]
+		for _, b := range bases {
+			base := b + names[i]
 			path := base + ext
 			if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 				a.postLog("⚠ 字幕存檔失敗：" + firstLine(err.Error()) + "\r\n")
@@ -480,11 +486,17 @@ func (a *app) saveSubtitles(ctx context.Context, subs []pageSubtitle, pageURL st
 			}
 			a.postLog("✓ 已下載字幕：" + filepath.Base(path) + label + "\r\n")
 			saved++
+			itemLabel := s.Label
+			if itemLabel == "" {
+				itemLabel = s.Lang
+			}
+			out = append(out, savedSubtitle{Path: path, Label: itemLabel, Lang: s.Lang})
 		}
 	}
 	if saved > 0 {
 		a.diagNote(fmt.Sprintf("外掛字幕 ✓ %d 個", saved))
 	}
+	return out
 }
 
 // fetchableSubtitles drops subtitles that only exist inside the page (blob:

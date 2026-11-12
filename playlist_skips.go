@@ -79,7 +79,7 @@ func (r *ytRunErrors) onlyUnavailable() bool {
 // saved (or already had) at least one video.
 func (a *app) acceptPlaylistSkips(err error) error {
 	// A playlist with nothing saved at all still fails.
-	if err == nil || a.stopRequested.Load() || !a.lastYtErrors.onlyUnavailable() || len(a.lastYtFiles) == 0 {
+	if err == nil || a.stopRequested.Load() || !a.lastYtErrors.onlyUnavailable() || (len(a.lastYtFiles) == 0 && len(a.lastYtSubs) == 0) {
 		return err
 	}
 	skipped := a.lastYtErrors.unavailable

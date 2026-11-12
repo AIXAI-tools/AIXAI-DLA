@@ -159,19 +159,32 @@ func (a *app) runEpisodeCapture(ctx context.Context, batch *episodeBatch, rawURL
 	if isEpisodeRepeated(err) {
 		return err
 	}
+	if isNoSubtitles(err) {
+		batch.failures = 0
+		var keys []string
+		for _, s := range a.lastCaptureStreams {
+			if s != "" {
+				batch.byStream[streamPathKey(s)] = ep
+				keys = append(keys, streamPathKey(s))
+			}
+		}
+		a.rememberEpisode(ep, "", keys)
+		return err
+	}
 	if err != nil {
 		batch.failures++
 		return err
 	}
 	batch.failures = 0
-	if mode == 3 || a.lastCaptureFile == "" {
+	if mode == 3 || (a.lastCaptureFile == "" && !cfg.SubtitlesOnly) {
 		return nil
 	}
-	sum, hashErr := fileSHA256(a.lastCaptureFile)
-	if hashErr == nil {
-		batch.byHash[sum] = ep
-	} else {
-		sum = ""
+	sum := ""
+	if a.lastCaptureFile != "" {
+		if s, hashErr := fileSHA256(a.lastCaptureFile); hashErr == nil {
+			sum = s
+			batch.byHash[sum] = ep
+		}
 	}
 	var keys []string
 	for _, s := range a.lastCaptureStreams {

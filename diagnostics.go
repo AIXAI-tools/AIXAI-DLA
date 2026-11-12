@@ -315,6 +315,9 @@ func (a *app) buildReportPack(id int) (string, string, error) {
 		if strings.TrimSpace(j.Cfg.CookieFile) != "" {
 			login = "cookie 檔"
 		}
+		if j.Cfg.SubtitlesOnly {
+			mode = "只下載字幕"
+		}
 		fmt.Fprintf(&b, "任務：#%d，%d 個網址，狀態：%s\r\n", j.ID, len(j.URLs), j.State)
 		fmt.Fprintf(&b, "處理方式：%s｜帳號安全模式：%v｜登入：%s｜連續集數：%v\r\n", mode, !j.Cfg.UnsafeMode, login, j.Cfg.Sequence)
 		if strings.TrimSpace(j.Cfg.ExtraArgs) != "" {

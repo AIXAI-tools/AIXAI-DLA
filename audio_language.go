@@ -175,7 +175,7 @@ func (a *app) applyHLSTracks(ctx context.Context, args []string, mode int, cfg s
 		lang = track.Lang
 	}
 	a.hlsSubs = hlsSubtitles(hlsTracks(playlist, "SUBTITLES"), streamURL, lang, headers)
-	if !ok || userChoosesFormat(cfg.ExtraArgs) {
+	if cfg.SubtitlesOnly || !ok || userChoosesFormat(cfg.ExtraArgs) {
 		return args
 	}
 	why := "串流標示的預設音軌"
