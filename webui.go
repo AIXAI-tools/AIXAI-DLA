@@ -166,9 +166,6 @@ func (a *app) drainStatus() {
 	}
 }
 
-// appendLog is used by UI-thread code; it goes through the same queue.
-func (a *app) appendLog(s string) { a.postLog(s) }
-
 func (a *app) emitTask(index int, state, message string) {
 	if a.job == nil {
 		return

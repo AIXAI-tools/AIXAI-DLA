@@ -337,24 +337,6 @@ func pageEpisodeEntries(body string) []pageEpisodeEntry {
 	return out
 }
 
-// episodeStreamFromPage returns the stream listed for episode ep. It only
-// trusts a real episode list (at least three different episode numbers), so
-// a lone number elsewhere in the data is never mistaken for an episode.
-func episodeStreamFromPage(body string, ep int) (string, bool) {
-	stream, _, _ := lookupPageEpisode(body, ep)
-	return stream, stream != ""
-}
-
-// lookupPageEpisode also reports whether the page has an episode list at all
-// and the highest episode in it.
-func lookupPageEpisode(body string, ep int) (stream string, listed bool, maxEp int) {
-	streams, listed, maxEp := pageEpisodeStreams(body, ep)
-	if len(streams) > 0 {
-		stream = streams[0]
-	}
-	return stream, listed, maxEp
-}
-
 // pageEpisodeStreams lists every stream the page data gives for episode ep,
 // addresses with a media file extension first.
 func pageEpisodeStreams(body string, ep int) (streams []string, listed bool, maxEp int) {

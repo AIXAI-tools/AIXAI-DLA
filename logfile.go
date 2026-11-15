@@ -55,7 +55,7 @@ func redactSecrets(s string) string {
 
 // recordLog keeps a chronological session copy and appends to the log file.
 // It is called for every message, whether it came from a worker (postLog) or
-// directly from the UI thread (appendLog).
+// directly from the UI thread.
 func (a *app) recordLog(s string) {
 	if s == "" {
 		return
@@ -239,19 +239,4 @@ func setClipboardText(hwnd uintptr, text string) error {
 		return errors.New("寫入剪貼簿失敗")
 	}
 	return nil // the clipboard now owns mem
-}
-
-// copyLogToClipboard copies the whole session log (oldest first, as debugging
-// expects) with secrets redacted, and reports where the log file lives.
-func (a *app) copyLogToClipboard() {
-	text := redactSecrets(a.sessionLogText())
-	if strings.TrimSpace(text) == "" {
-		messageBox(a.hwnd, "複製 Log", "目前還沒有任何紀錄。", MB_OK|MB_ICONINFORMATION)
-		return
-	}
-	if err := setClipboardText(a.hwnd, text); err != nil {
-		messageBox(a.hwnd, "複製 Log", err.Error(), MB_OK|MB_ICONWARNING)
-		return
-	}
-	a.postStatus(fmt.Sprintf("狀態：已複製 %d 行 Log 到剪貼簿（本次紀錄檔：%s）", strings.Count(text, "\n"), a.latestRunLog()))
 }

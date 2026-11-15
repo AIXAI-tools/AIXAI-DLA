@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,7 +20,10 @@ import (
 // flag, process, log file). Tasks for the same website never run together:
 // a site sees one task's requests at a time, which keeps the request rate of
 // a single download even without sign-in (sites also block by IP).
-// Unfinished tasks are saved to tasks.json and come back paused next time.
+// Tasks are saved to tasks.json: unfinished tasks come back paused next
+// time (except tasks paused for an update, which resume). Up to 50 newest
+// finished tasks (done, aborted, partial) are also kept across restarts
+// in their original order and state until removed by 「清除已完成」.
 // The order of a.jobs is the order of the cards and the priority: tasks
 // start in that order, and moving a task up (drag, 優先下載) makes a lower
 // running task that is in its way step aside (jobYield) and queue again.
@@ -36,9 +40,10 @@ const (
 	// above it and is queued again, resuming at the item it stopped at.
 	jobYield = "yield"
 
-	maxJobsLimit   = 8
-	jobsFileName   = "tasks.json"
-	defaultMaxJobs = 2
+	maxJobsLimit        = 8
+	jobsFileName        = "tasks.json"
+	defaultMaxJobs      = 2
+	maxFinishedJobsKept = 50
 )
 
 type jobItem struct {
@@ -164,13 +169,46 @@ func (j *job) view() jobView {
 // Persistence
 // ---------------------------------------------------------------------------
 
+func isJobFinished(j *job) bool {
+	if j == nil {
+		return false
+	}
+	return j.State == jobDone || j.State == jobAborted || j.State == jobPartial
+}
+
 func (a *app) jobsPath() string { return filepath.Join(a.appDir, jobsFileName) }
 
-// saveJobsLocked writes the unfinished tasks; jobsMu must be held.
+// saveJobsLocked writes tasks to tasks.json; jobsMu must be held.
+// Unfinished tasks are always kept. Among finished tasks (done, aborted,
+// partial), only the 50 newest by Created are kept. The tasks are written
+// in a.jobs order, and the in-memory list is not changed.
 func (a *app) saveJobsLocked() {
-	var keep []*job
+	var finished []*job
 	for _, j := range a.jobs {
-		if j.State != jobDone && j.State != jobAborted {
+		if isJobFinished(j) {
+			finished = append(finished, j)
+		}
+	}
+	var keepFinished map[*job]bool
+	if len(finished) > maxFinishedJobsKept {
+		// Sort descending by Created (newest first). Break ties by higher ID.
+		sort.SliceStable(finished, func(i, j int) bool {
+			if !finished[i].Created.Equal(finished[j].Created) {
+				return finished[i].Created.After(finished[j].Created)
+			}
+			return finished[i].ID > finished[j].ID
+		})
+		keepFinished = make(map[*job]bool, maxFinishedJobsKept)
+		for _, j := range finished[:maxFinishedJobsKept] {
+			keepFinished[j] = true
+		}
+	}
+	keep := make([]*job, 0, len(a.jobs))
+	for _, j := range a.jobs {
+		if j == nil {
+			continue
+		}
+		if !isJobFinished(j) || keepFinished == nil || keepFinished[j] {
 			keep = append(keep, j)
 		}
 	}
@@ -181,9 +219,11 @@ func (a *app) saveJobsLocked() {
 	a.notePersistError("任務清單", writeFileAtomic(a.jobsPath(), data))
 }
 
-// loadJobs restores the tasks left unfinished last time, all paused, except
-// the tasks paused for a version update, which are queued again right after
-// that update. Returns how many were queued again.
+// loadJobs restores the tasks from tasks.json. Finished tasks (done,
+// partial, aborted) keep their state, message, items, Name and LogFile.
+// Unfinished tasks come back paused, except tasks paused for a version
+// update, which are queued again right after that update. Returns how
+// many were queued again.
 func (a *app) loadJobs() (resumed int) {
 	data, err := os.ReadFile(a.jobsPath())
 	if err != nil {
@@ -201,6 +241,17 @@ func (a *app) loadJobs() (resumed int) {
 		}
 		if len(j.Items) != len(j.URLs) {
 			j.Items = make([]jobItem, len(j.URLs))
+		}
+		if isJobFinished(j) {
+			j.AutoResume = false
+			if j.Pos < 0 || j.Pos > len(j.URLs) {
+				j.Pos = 0
+			}
+			a.jobs = append(a.jobs, j)
+			if j.ID >= a.nextJobID {
+				a.nextJobID = j.ID
+			}
+			continue
 		}
 		for i := range j.Items {
 			if j.Items[i].State == "" || j.Items[i].State == "running" {
@@ -698,7 +749,7 @@ func (a *app) clearFinishedJobs() {
 	a.jobsMu.Lock()
 	var keep []*job
 	for _, j := range a.jobs {
-		if j.State != jobDone && j.State != jobAborted && j.State != jobPartial {
+		if !isJobFinished(j) {
 			keep = append(keep, j)
 		}
 	}

@@ -110,18 +110,18 @@ func TestEpisodeStreamFromPage(t *testing.T) {
 		fmt.Fprintf(&b, `{"id":%d,"route_episode_number":%d,"number":%d,"title":"Episode %d","play_url":"https:\/\/media.example.com\/show_9\/zh\/%d\/stream.m3u8?s=x%d","thumb_url":"\/p.jpg"},`, 100+i, i, i, i, i, i)
 	}
 	b.WriteString(`]};</script>`)
-	got, ok := episodeStreamFromPage(b.String(), 3)
-	if !ok || got != "https://media.example.com/show_9/zh/3/stream.m3u8?s=x3" {
-		t.Fatalf("got %q %v", got, ok)
+	got, _, _ := pageEpisodeStreams(b.String(), 3)
+	if len(got) == 0 || got[0] != "https://media.example.com/show_9/zh/3/stream.m3u8?s=x3" {
+		t.Fatalf("got %q", got)
 	}
-	if _, ok := episodeStreamFromPage(b.String(), 9); ok {
+	if streams, _, _ := pageEpisodeStreams(b.String(), 9); len(streams) > 0 {
 		t.Fatal("missing episode must not match")
 	}
 	if pageTitle(b.String()) != "Some Title Episode 7" {
 		t.Fatal("title")
 	}
 	single := `{"number":3,"file":"https://media.example.com/a.mp4"}`
-	if _, ok := episodeStreamFromPage(single, 3); ok {
+	if streams, _, _ := pageEpisodeStreams(single, 3); len(streams) > 0 {
 		t.Fatal("a lone entry is not an episode list")
 	}
 }
@@ -140,10 +140,10 @@ func TestLookupPageEpisodeMissing(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		fmt.Fprintf(&b, `{"number":%d,"play_url":"https://media.example.com/s/%d/stream.m3u8"},`, i, i)
 	}
-	if s, listed, max := lookupPageEpisode(b.String(), 9); s != "" || !listed || max != 4 {
+	if s, listed, max := pageEpisodeStreams(b.String(), 9); len(s) != 0 || !listed || max != 4 {
 		t.Fatalf("got %q %v %d", s, listed, max)
 	}
-	if _, listed, _ := lookupPageEpisode(`{"number":1,"file":"https://a.example.com/x.mp4"}`, 9); listed {
+	if _, listed, _ := pageEpisodeStreams(`{"number":1,"file":"https://a.example.com/x.mp4"}`, 9); listed {
 		t.Fatal("a lone entry is not a list")
 	}
 }
@@ -198,9 +198,9 @@ func TestPageEpisodeStreamUnescapesJSON(t *testing.T) {
 		fmt.Fprintf(&b, `{\"episode\":%d,\"play_url\":\"https:\/\/cdn.example\/h%d\/v.m3u8?ts=1\u0026secret=s%d\u0026usr=u\"},`, ep, ep, ep)
 	}
 	body := strings.ReplaceAll(b.String(), `\"`, `"`)
-	got, ok := episodeStreamFromPage(body, 3)
+	got, _, _ := pageEpisodeStreams(body, 3)
 	want := "https://cdn.example/h3/v.m3u8?ts=1&secret=s3&usr=u"
-	if !ok || got != want {
+	if len(got) == 0 || got[0] != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -217,10 +217,10 @@ func TestSameStreamPath(t *testing.T) {
 
 func TestPageEpisodeOutputName(t *testing.T) {
 	body := "<title>Some Show 第 3 集 - Site</title>"
-	if got := capturedOutputBase("https://x/detail/watch/some-show-3/3", pageEpisodeTitle("https://x/detail/watch/some-show-3/3", body)); got != "some-show-3_E003" {
+	if got := capturedOutputBaseNamed("https://x/detail/watch/some-show-3/3", pageEpisodeTitle("https://x/detail/watch/some-show-3/3", body), episodeNaming{}, 0); got != "some-show-3_E003" {
 		t.Fatalf("got %q", got)
 	}
-	if got := capturedOutputBase("https://x/play/16465/3", pageEpisodeTitle("https://x/play/16465/3", body)); got != "Some Show 第 3 集 - Site_E003" {
+	if got := capturedOutputBaseNamed("https://x/play/16465/3", pageEpisodeTitle("https://x/play/16465/3", body), episodeNaming{}, 0); got != "Some Show 第 3 集 - Site_E003" {
 		t.Fatalf("got %q", got)
 	}
 }

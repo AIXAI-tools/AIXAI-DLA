@@ -414,11 +414,7 @@ func (a *app) capturedFileBase(rawURL string, c browserMediaCandidate, dir strin
 	return string(name)
 }
 
-func capturedOutputBase(rawURL, title string) string {
-	return capturedOutputBaseNamed(rawURL, title, episodeNaming{}, 0)
-}
-
-// capturedOutputBaseNamed is capturedOutputBase with a 連續集數 naming
+// capturedOutputBaseNamed names a captured download with 連續集數 naming
 // (episode_naming.go); seqEp numbers an item whose address has no episode.
 func capturedOutputBaseNamed(rawURL, title string, n episodeNaming, seqEp int) string {
 	if dramaID, ep, ok := parseTikTokShortDramaURL(rawURL); ok {

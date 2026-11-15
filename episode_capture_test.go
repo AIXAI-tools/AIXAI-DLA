@@ -58,23 +58,23 @@ func TestEpisodeFromQuery(t *testing.T) {
 
 func TestCapturedOutputBaseUsesNumericPathEpisode(t *testing.T) {
 	title := "Some Title - Play - Site"
-	a := capturedOutputBase("https://x/play/16465/1/", title)
-	b := capturedOutputBase("https://x/play/16465/2", title)
+	a := capturedOutputBaseNamed("https://x/play/16465/1/", title, episodeNaming{}, 0)
+	b := capturedOutputBaseNamed("https://x/play/16465/2", title, episodeNaming{}, 0)
 	if a == b || !strings.HasSuffix(a, "_E001") || !strings.HasSuffix(b, "_E002") {
 		t.Fatalf("names must differ by episode: %q %q", a, b)
 	}
-	if got := capturedOutputBase("https://x/play/16465/12", ""); got != "16465_E012" {
+	if got := capturedOutputBaseNamed("https://x/play/16465/12", "", episodeNaming{}, 0); got != "16465_E012" {
 		t.Fatalf("without a page title the name comes from the path: %q", got)
 	}
 }
 
 func TestCapturedOutputBaseUsesEpisodeQuery(t *testing.T) {
-	a := capturedOutputBase("https://x/en/film/t-1/watch?ep=7", "Watch Some Title | Site")
-	b := capturedOutputBase("https://x/en/film/t-1/watch?ep=8", "Watch Some Title | Site")
+	a := capturedOutputBaseNamed("https://x/en/film/t-1/watch?ep=7", "Watch Some Title | Site", episodeNaming{}, 0)
+	b := capturedOutputBaseNamed("https://x/en/film/t-1/watch?ep=8", "Watch Some Title | Site", episodeNaming{}, 0)
 	if a == b || !strings.HasSuffix(a, "_E007") || !strings.HasSuffix(b, "_E008") {
 		t.Fatalf("names must differ by episode: %q %q", a, b)
 	}
-	if got := capturedOutputBase("https://x/en/film/some-title-123/watch?ep=2", ""); got != "some-title-123_E002" {
+	if got := capturedOutputBaseNamed("https://x/en/film/some-title-123/watch?ep=2", "", episodeNaming{}, 0); got != "some-title-123_E002" {
 		t.Fatalf("without a page title the series name comes from the path: %q", got)
 	}
 }
@@ -88,8 +88,8 @@ func TestPageEpisodeFromJSObjectList(t *testing.T) {
   episodes: [{"episode":"1","title":"001","src":"https://cdn.example/m/100/001_a.mp4","type":"video/mp4"},{"episode":"2","title":"002","src":"https://cdn.example/m/100/002_b.mp4","type":"video/mp4"},{"episode":"3","title":"003","src":"https://cdn.example/m/100/003_c.mp4","type":"video/mp4"}]
 };`
 	for ep, want := range map[int]string{1: "001_a.mp4", 2: "002_b.mp4", 3: "003_c.mp4"} {
-		got, ok := episodeStreamFromPage(body, pageEpisodeNumber(fmt.Sprintf("https://x/play/100/%d/", ep)))
-		if !ok || !strings.HasSuffix(got, want) {
+		got, _, _ := pageEpisodeStreams(body, pageEpisodeNumber(fmt.Sprintf("https://x/play/100/%d/", ep)))
+		if len(got) == 0 || !strings.HasSuffix(got[0], want) {
 			t.Errorf("ep %d → %q, want …%s", ep, got, want)
 		}
 	}

@@ -106,13 +106,10 @@ func subtitleFromJSON(m map[string]any, baseURL string) (pageSubtitle, bool) {
 	return s, true
 }
 
-// pageEpisodeSubtitles returns the subtitle files the page lists for episode
-// ep: the per-episode subtitles object first, then the page's <track>
-// elements (which belong to the video the page plays).
-func pageEpisodeSubtitles(body, baseURL string, ep int) []pageSubtitle {
-	return pageEpisodeSubtitlesFor(body, baseURL, "", ep)
-}
-
+// pageEpisodeSubtitlesFor returns the subtitle files the page lists for
+// episode ep: the per-episode subtitles object first, then the page's <track>
+// elements (which belong to the video the page plays). streamURL is the stream
+// actually downloaded (may be empty).
 func pageEpisodeSubtitlesFor(body, baseURL, streamURL string, ep int) []pageSubtitle {
 	var out []pageSubtitle
 	seen := map[string]bool{}
@@ -401,14 +398,10 @@ func isThumbnailTrack(text string) bool {
 	return cues > 0
 }
 
-// savePageSubtitles saves the page's subtitles for episode ep next to each
+// savePageSubtitlesFor saves the page's subtitles for episode ep next to each
 // downloaded video. WebVTT is converted to SRT, which more players open; if
 // the conversion fails the .vtt is kept. A subtitle that cannot be fetched
 // only logs a warning: the video itself is done.
-func (a *app) savePageSubtitles(ctx context.Context, body, pageURL string, ep int, videos []string, cfg settings) {
-	a.savePageSubtitlesFor(ctx, body, pageURL, "", ep, videos, cfg)
-}
-
 func (a *app) savePageSubtitlesFor(ctx context.Context, body, pageURL, streamURL string, ep int, videos []string, cfg settings) {
 	a.saveSubtitles(ctx, pageEpisodeSubtitlesFor(body, pageURL, streamURL, ep), pageURL, videos, cfg)
 }

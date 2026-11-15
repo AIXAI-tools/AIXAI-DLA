@@ -53,13 +53,17 @@ func hlsTracks(playlist, typ string) []hlsTrack {
 		for _, m := range hlsMediaAttrRE.FindAllStringSubmatch(strings.TrimPrefix(line, "#EXT-X-MEDIA:"), -1) {
 			attrs[m[1]] = strings.Trim(m[2], `"`)
 		}
-		if attrs["TYPE"] != typ || !langTagRE.MatchString(attrs["LANGUAGE"]) {
+		// 有些網站寫成 en_US（底線）：比對時當成 en-US，Lang 保留原樣給 yt-dlp 的 language 篩選用。
+		if attrs["TYPE"] != typ || !langTagRE.MatchString(normLangTag(attrs["LANGUAGE"])) {
 			continue
 		}
 		out = append(out, hlsTrack{Name: attrs["NAME"], Lang: attrs["LANGUAGE"], URI: attrs["URI"], Default: attrs["DEFAULT"] == "YES"})
 	}
 	return out
 }
+
+// normLangTag writes a language tag with hyphens (en_US → en-US).
+func normLangTag(tag string) string { return strings.ReplaceAll(strings.TrimSpace(tag), "_", "-") }
 
 // pageLanguage returns the language asked for in the page address
 // (?lang= / ?language=), or "".
@@ -82,14 +86,15 @@ func trackForLanguage(tracks []hlsTrack, want string) int {
 	if want == "" {
 		return -1
 	}
+	want = normLangTag(want)
 	for i, t := range tracks {
-		if strings.EqualFold(t.Lang, want) {
+		if strings.EqualFold(normLangTag(t.Lang), want) {
 			return i
 		}
 	}
 	primary := strings.ToLower(strings.SplitN(want, "-", 2)[0])
 	for i, t := range tracks {
-		if strings.ToLower(strings.SplitN(t.Lang, "-", 2)[0]) == primary {
+		if strings.ToLower(strings.SplitN(normLangTag(t.Lang), "-", 2)[0]) == primary {
 			return i
 		}
 	}

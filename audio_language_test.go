@@ -89,6 +89,27 @@ func TestHLSSubtitlesPrimaryLanguage(t *testing.T) {
 	}
 }
 
+// 串流把語言寫成 en_US（底線）時，字幕軌不可被略過。
+func TestHLSSubtitlesUnderscoreLanguage(t *testing.T) {
+	master := `#EXTM3U
+#EXT-X-VERSION:4
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en_US",DEFAULT=YES,AUTOSELECT=YES,URI="subtitle/abc.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=1219911,RESOLUTION=480x854,SUBTITLES="subs"
+v480p.m3u8
+`
+	tracks := hlsTracks(master, "SUBTITLES")
+	if len(tracks) != 1 || tracks[0].Lang != "en_US" {
+		t.Fatalf("tracks = %+v", tracks)
+	}
+	if i := trackForLanguage(tracks, pageLanguage("https://e.com/1?lang=en-US")); i != 0 {
+		t.Errorf("trackForLanguage(en-US) = %d, want 0", i)
+	}
+	subs := hlsSubtitles(tracks, "https://cdn.example.com/hls/master.m3u8", "en-US", nil)
+	if len(subs) != 1 || subs[0].URL != "https://cdn.example.com/hls/subtitle/abc.m3u8" || subtitleNames("", subs)[0] != "" {
+		t.Errorf("subs = %+v", subs)
+	}
+}
+
 func TestFetchHLSSubtitleJoinsSegments(t *testing.T) {
 	segs := map[string]string{
 		"/subs.m3u8": "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\ns0.vtt\n#EXTINF:6.000,\ns1.vtt\n#EXT-X-ENDLIST\n",
@@ -120,7 +141,7 @@ func TestFetchHLSSubtitleJoinsSegments(t *testing.T) {
 func TestPageTracksIgnoreScriptText(t *testing.T) {
 	body := `<html><body><video><track kind="subtitles" src="/real.vtt" srclang="en"></video>
 <script>// <track src=blob> loads instantly; fall back to <track src> otherwise</script></body></html>`
-	subs := pageEpisodeSubtitles(body, "https://site.example/watch/show/1", 1)
+	subs := pageEpisodeSubtitlesFor(body, "https://site.example/watch/show/1", "", 1)
 	if len(subs) != 1 || subs[0].URL != "https://site.example/real.vtt" {
 		t.Errorf("subs = %+v", subs)
 	}

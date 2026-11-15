@@ -259,13 +259,6 @@ func isTikTokDramaAPI(raw string) bool {
 	return strings.Contains(lower, "/api/drama/episode/item_list") || strings.Contains(lower, "/api/item/detail")
 }
 
-// tiktokCandidateFromAPIBody picks the requested episode out of a TikTok API
-// response body and turns its best stream into a capture candidate.
-func tiktokCandidateFromAPIBody(body []byte, apiURL string, episode int, reqHeaders map[string]string) (browserMediaCandidate, bool) {
-	c, res, _ := tiktokCandidateFromAPIBodyResult(body, apiURL, episode, 0, reqHeaders)
-	return c, res == tiktokAPIMatched
-}
-
 // tiktokAPIResult is what one TikTok API response held for the episode; the
 // capture counts them so a failed episode says why (never the addresses).
 type tiktokAPIResult int
@@ -277,7 +270,7 @@ const (
 	tiktokAPINoStream                  // this episode, without a playable address
 )
 
-// tiktokCandidateFromAPIBodyResult is tiktokCandidateFromAPIBody with the
+// tiktokCandidateFromAPIBodyResult picks the requested episode and returns the
 // result and the episode numbers the body listed; maxShortSide is the 最高
 // 720p limit (0 = the best stream).
 func tiktokCandidateFromAPIBodyResult(body []byte, apiURL string, episode, maxShortSide int, reqHeaders map[string]string) (browserMediaCandidate, tiktokAPIResult, []int) {

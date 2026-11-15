@@ -22,7 +22,7 @@ func TestPageEpisodeSubtitlesByEpisode(t *testing.T) {
 		`"2":[{"label":"字幕一","lang":"","src":"https://cdn.example.com/m/9/002_bb.vtt","isDefault":true},` +
 		`{"label":"English {en}","lang":"en","src":"/m/9/002_bb.en.vtt"}]}, other: 1 };</script>
 <track kind="subtitles" src="https://cdn.example.com/wrong.vtt">`
-	got := pageEpisodeSubtitles(body, "https://www.example.com/play/9/2/", 2)
+	got := pageEpisodeSubtitlesFor(body, "https://www.example.com/play/9/2/", "", 2)
 	want := []pageSubtitle{
 		{URL: "https://cdn.example.com/m/9/002_bb.vtt", Label: "字幕一", Default: true},
 		{URL: "https://www.example.com/m/9/002_bb.en.vtt", Label: "English {en}", Lang: "en"},
@@ -30,12 +30,12 @@ func TestPageEpisodeSubtitlesByEpisode(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("episode 2 = %#v, want %#v", got, want)
 	}
-	if got := pageEpisodeSubtitles(body, "https://www.example.com/play/9/1/", 1); len(got) != 1 || got[0].URL != "https://cdn.example.com/m/9/001_aa.vtt" {
+	if got := pageEpisodeSubtitlesFor(body, "https://www.example.com/play/9/1/", "", 1); len(got) != 1 || got[0].URL != "https://cdn.example.com/m/9/001_aa.vtt" {
 		t.Fatalf("episode 1 = %#v", got)
 	}
 	// An episode the subtitle list does not name falls back to the page's
 	// <track>, which belongs to the video the page plays.
-	if got := pageEpisodeSubtitles(body, "https://www.example.com/play/9/3/", 3); len(got) != 1 || got[0].URL != "https://cdn.example.com/wrong.vtt" {
+	if got := pageEpisodeSubtitlesFor(body, "https://www.example.com/play/9/3/", "", 3); len(got) != 1 || got[0].URL != "https://cdn.example.com/wrong.vtt" {
 		t.Fatalf("episode 3 = %#v", got)
 	}
 }
@@ -44,7 +44,7 @@ func TestPageEpisodeSubtitlesTrack(t *testing.T) {
 	body := `<video><source src="v.mp4"><track kind="chapters" src="ch.vtt">` +
 		`<track kind="captions" srclang="zh" label="中文" src="/subs/zh.vtt" default>` +
 		`<track src='/subs/en.srt' srclang=en></video>`
-	got := pageEpisodeSubtitles(body, "https://example.com/watch/abc", 0)
+	got := pageEpisodeSubtitlesFor(body, "https://example.com/watch/abc", "", 0)
 	want := []pageSubtitle{
 		{URL: "https://example.com/subs/zh.vtt", Label: "中文", Lang: "zh", Default: true},
 		{URL: "https://example.com/subs/en.srt", Lang: "en"},
@@ -52,7 +52,7 @@ func TestPageEpisodeSubtitlesTrack(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tracks = %#v, want %#v", got, want)
 	}
-	if got := pageEpisodeSubtitles(`<video src="v.mp4"></video>`, "https://example.com/", 1); len(got) != 0 {
+	if got := pageEpisodeSubtitlesFor(`<video src="v.mp4"></video>`, "https://example.com/", "", 1); len(got) != 0 {
 		t.Fatalf("no subtitles = %#v", got)
 	}
 }
@@ -135,20 +135,20 @@ func TestPageEntrySubtitles(t *testing.T) {
 		`{"language_code":"en-US","label":"English","subtitle_url":"\/e\/s\/ep2-en","is_default":true},` +
 		`{"language_code":"zh-TW","label":"繁體中文","subtitle_url":"\/e\/s\/ep2-zh","is_default":false}],` +
 		`"selected_subtitle_language":"zh-TW"}]};</script>`
-	got := pageEpisodeSubtitles(body, "https://www.example.com/watch/show/2?lang=zh-TW", 2)
+	got := pageEpisodeSubtitlesFor(body, "https://www.example.com/watch/show/2?lang=zh-TW", "", 2)
 	want := []pageSubtitle{{URL: "https://www.example.com/e/s/ep2-zh", Label: "繁體中文", Lang: "zh-TW", Default: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("episode 2 = %#v, want %#v", got, want)
 	}
 	// No selected language in the data: the address's lang, then the default.
 	noSel := strings.ReplaceAll(body, `"selected_subtitle_language":"zh-TW"`, `"selected_subtitle_language":""`)
-	if got := pageEpisodeSubtitles(noSel, "https://www.example.com/watch/show/1?lang=zh-TW", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-zh" {
+	if got := pageEpisodeSubtitlesFor(noSel, "https://www.example.com/watch/show/1?lang=zh-TW", "", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-zh" {
 		t.Fatalf("address lang = %#v", got)
 	}
-	if got := pageEpisodeSubtitles(noSel, "https://www.example.com/watch/show/1", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-en" {
+	if got := pageEpisodeSubtitlesFor(noSel, "https://www.example.com/watch/show/1", "", 1); len(got) != 1 || got[0].URL != "https://www.example.com/e/s/ep1-en" {
 		t.Fatalf("default = %#v", got)
 	}
-	if got := pageEpisodeSubtitles(body, "https://www.example.com/watch/show/3", 3); len(got) != 0 {
+	if got := pageEpisodeSubtitlesFor(body, "https://www.example.com/watch/show/3", "", 3); len(got) != 0 {
 		t.Fatalf("unlisted episode = %#v", got)
 	}
 }
@@ -181,7 +181,7 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 		if src := signedStreamSource(urlPathOnly(t, streams[0])); !strings.HasSuffix(src, "/manifest_1080.m3u8") {
 			t.Fatalf("ep1 first stream = %q (src=%q), want play_url manifest_1080.m3u8", streams[0], src)
 		}
-		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=zh-TW", 1)
+		subs := pageEpisodeSubtitlesFor(body, "https://site.example/detail/watch/test-drama/1?lang=zh-TW", "", 1)
 		if len(subs) != 1 || subs[0].Lang != "es-ES" || !subs[0].Default {
 			t.Fatalf("zh ep1 subs = %#v, want selected es-ES", subs)
 		}
@@ -196,7 +196,7 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 		if src := signedStreamSource(urlPathOnly(t, streams[0])); !strings.HasSuffix(src, "/manifest_1080.m3u8") {
 			t.Fatalf("ep1 first stream = %q (src=%q), want play_url manifest_1080.m3u8", streams[0], src)
 		}
-		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", 1)
+		subs := pageEpisodeSubtitlesFor(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", "", 1)
 		if len(subs) != 1 || subs[0].Lang != "en-US" || !subs[0].Default {
 			t.Fatalf("en ep1 subs = %#v, want selected en-US", subs)
 		}
@@ -212,7 +212,7 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 			if !listed || len(streams) != 1 || !strings.HasSuffix(streams[0], "/ep2-18779eeb.mp4") {
 				t.Fatalf("%s ep2 streams = %v", file, streams)
 			}
-			subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/2?lang=zh-TW", 2)
+			subs := pageEpisodeSubtitlesFor(body, "https://site.example/detail/watch/test-drama/2?lang=zh-TW", "", 2)
 			if len(subs) != 1 || !subs[0].Default || subs[0].Lang != "" || subs[0].Label != "" {
 				t.Fatalf("%s ep2 subs = %#v, want unnamed default direct_subtitle_url", file, subs)
 			}
@@ -231,7 +231,7 @@ func TestPageEntryPlayableAndDirectSubtitles(t *testing.T) {
 		if !listed || len(streams) != 2 || !strings.HasSuffix(streams[0], "/ep1-a4398125.mp4") {
 			t.Fatalf("same_src ep1 streams = %v, want direct_play_url first", streams)
 		}
-		subs := pageEpisodeSubtitles(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", 1)
+		subs := pageEpisodeSubtitlesFor(body, "https://site.example/detail/watch/test-drama/1?lang=en-US", "", 1)
 		if len(subs) != 1 || !subs[0].Default {
 			t.Fatalf("same_src ep1 subs = %#v", subs)
 		}
@@ -379,17 +379,17 @@ func TestDownloadPageEpisodePlayFallbackAndLogs(t *testing.T) {
 
 func TestCandidateURLSubtitleUnchangedWithoutEpisodeEntry(t *testing.T) {
 	// Track-based page and by-episode subtitles map: passing any candidateURL to
-	// pageEpisodeSubtitlesFor must behave identically to pageEpisodeSubtitles.
+	// pageEpisodeSubtitlesFor must behave identically to an empty candidateURL.
 	trackPage := `<video><source src="v.mp4"><track kind="subtitles" srclang="zh" label="中文" src="/subs/zh.vtt" default></video>`
 	gotTrack := pageEpisodeSubtitlesFor(trackPage, "https://example.com/watch/1", "https://cdn.example.com/v.mp4", 1)
-	wantTrack := pageEpisodeSubtitles(trackPage, "https://example.com/watch/1", 1)
+	wantTrack := pageEpisodeSubtitlesFor(trackPage, "https://example.com/watch/1", "", 1)
 	if !reflect.DeepEqual(gotTrack, wantTrack) {
 		t.Fatalf("track page: got %#v, want %#v", gotTrack, wantTrack)
 	}
 
 	byEpPage := `<script>var p = { subtitles: {"2":[{"label":"中文","lang":"zh","src":"/s/2.vtt","isDefault":true}]} };</script>`
 	gotByEp := pageEpisodeSubtitlesFor(byEpPage, "https://example.com/play/9/2", "https://cdn.example.com/2.mp4", 2)
-	wantByEp := pageEpisodeSubtitles(byEpPage, "https://example.com/play/9/2", 2)
+	wantByEp := pageEpisodeSubtitlesFor(byEpPage, "https://example.com/play/9/2", "", 2)
 	if !reflect.DeepEqual(gotByEp, wantByEp) {
 		t.Fatalf("by-episode map page: got %#v, want %#v", gotByEp, wantByEp)
 	}
@@ -397,7 +397,7 @@ func TestCandidateURLSubtitleUnchangedWithoutEpisodeEntry(t *testing.T) {
 	// Episode object without direct_play_url: candidateURL must not alter multi_subtitles selection.
 	entryNoDirect := `<script>var d={"episodes":[{"number":1,"play_url":"https:\/\/cdn.example.com\/1.m3u8","multi_subtitles":[{"language_code":"zh-TW","label":"繁體中文","subtitle_url":"\/e\/s\/1-zh","is_default":true}]}]};</script>`
 	gotNoDirect := pageEpisodeSubtitlesFor(entryNoDirect, "https://example.com/watch/show/1", "https://other.example.com/cand.m3u8", 1)
-	wantNoDirect := pageEpisodeSubtitles(entryNoDirect, "https://example.com/watch/show/1", 1)
+	wantNoDirect := pageEpisodeSubtitlesFor(entryNoDirect, "https://example.com/watch/show/1", "", 1)
 	if !reflect.DeepEqual(gotNoDirect, wantNoDirect) {
 		t.Fatalf("entry without direct_play_url: got %#v, want %#v", gotNoDirect, wantNoDirect)
 	}

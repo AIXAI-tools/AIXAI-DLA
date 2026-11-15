@@ -33,7 +33,7 @@ func TestEpisodeNamingJoin(t *testing.T) {
 
 func TestCapturedOutputBaseNamedDefaultUnchanged(t *testing.T) {
 	for _, u := range []string{"https://x/play/16465/3", "https://x/detail/watch/some-show-3/3", "https://x/en/film/some-title-123/watch?ep=2", "https://x/v/abc"} {
-		if a, b := capturedOutputBase(u, "Title"), capturedOutputBaseNamed(u, "Title", episodeNaming{}, 7); a != b {
+		if a, b := capturedOutputBaseNamed(u, "Title", episodeNaming{}, 0), capturedOutputBaseNamed(u, "Title", episodeNaming{}, 7); a != b {
 			t.Errorf("%s: default naming changed %q -> %q", u, a, b)
 		}
 	}
@@ -169,8 +169,8 @@ func TestEpisodeLabelSurvivesLongTitle(t *testing.T) {
 			t.Errorf("title %d: %d distinct names, want 12", n, len(names))
 		}
 	}
-	if got := capturedOutputBase("https://x.example/play/9/2", strings.Repeat("a", 170)); !strings.HasSuffix(got, "_E002") {
-		t.Errorf("capturedOutputBase lost the episode: %q", got)
+	if got := capturedOutputBaseNamed("https://x.example/play/9/2", strings.Repeat("a", 170), episodeNaming{}, 0); !strings.HasSuffix(got, "_E002") {
+		t.Errorf("capturedOutputBaseNamed lost the episode: %q", got)
 	}
 	// A cut that ends in a space or dot must not leave it before the label.
 	if got := withEpisodeLabel(strings.Repeat("a", 154)+" .x", "_E001"); strings.Contains(got, " _E") || strings.Contains(got, "._E") {
