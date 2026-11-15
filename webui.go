@@ -3,10 +3,11 @@
 package main
 
 import (
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,11 +18,38 @@ import (
 	webview2 "github.com/jchv/go-webview2"
 )
 
-// The whole front end is one self-contained HTML file (CSS + JS inline) so the
-// application stays a single portable .exe.
+// The front end is split into HTML/CSS/JS parts under ui/ and assembled at
+// startup into one self-contained HTML string so the application stays a single
+// portable .exe.
 //
-//go:embed ui/index.html
-var uiHTML string
+//go:embed ui
+var uiFS embed.FS
+
+var uiHTML = assembleUI()
+
+func assembleUI() string {
+	read := func(p string) string {
+		b, _ := uiFS.ReadFile(p)
+		return string(b)
+	}
+	entries, _ := fs.ReadDir(uiFS, "ui/js")
+	var js strings.Builder
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+			js.WriteString(read("ui/js/" + e.Name()))
+		}
+	}
+	// 標記行也接受 CRLF（git 在 Windows 取出時可能轉換換行）
+	css, dialogs := read("ui/style.css"), read("ui/dialogs.html")
+	return strings.NewReplacer(
+		"<!--@style.css-->\r\n", css,
+		"<!--@style.css-->\n", css,
+		"<!--@dialogs.html-->\r\n", dialogs,
+		"<!--@dialogs.html-->\n", dialogs,
+		"<!--@js-->\r\n", js.String(),
+		"<!--@js-->\n", js.String(),
+	).Replace(read("ui/index.html"))
+}
 
 const (
 	designLogicalW = 1240

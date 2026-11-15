@@ -1,0 +1,129 @@
+<dialog id="dlgHistory">
+  <div class="dlg-h"><h3>歷史下載清單</h3><span class="muted" id="histCount"></span><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <div class="hist-bar">
+      <input type="search" id="histQ" placeholder="搜尋網址或標題" spellcheck="false">
+      <select id="histF"><option value="">全部</option><option value="done">成功</option><option value="failed">失敗</option></select>
+      <label class="muted"><input type="checkbox" id="histAll"> 全選</label>
+    </div>
+    <ul class="hist" id="histList"></ul>
+  </div>
+  <div class="dlg-f">
+    <span class="muted" id="histSel" style="margin-right:auto;align-self:center"></span>
+    <button class="btn sm" id="histAdd" title="把選取的網址加到網址欄（不會自動開始下載）">加入網址欄</button>
+    <button class="btn sm" id="histCsv" title="匯出成 CSV，可用 Excel 開啟">匯出 CSV</button>
+    <button class="btn sm" id="histTxt" title="匯出成 TXT，一行一個網址">匯出 TXT</button>
+    <button class="btn sm" id="histDel">刪除所選</button>
+    <button class="btn sm danger" id="histClear">清除全部</button>
+  </div>
+</dialog>
+
+<!-- ================= update dialog ================= -->
+<dialog id="dlgUpdate">
+  <div class="dlg-h"><h3>版本更新／切換</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <p style="margin-top:0">目前使用 <b id="curVer"></b>。可更新到新版本，或退回先前的穩定版本；每個檔案都會先核對 SHA256 才替換。</p>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="startupUpdCheck" checked> 自動檢查新版本（啟動時，以及程式開著時每 6 小時；有新版本會開啟此視窗；連線到 GitHub；關閉後只在開啟此視窗時檢查）</span></label>
+    <div id="relState" class="note">正在讀取版本清單…</div>
+    <div id="relList"></div>
+    <div id="updProgress" class="hidden" style="margin-top:12px">
+      <div class="bar"><i id="updBar"></i></div>
+      <div id="updMsg" style="margin-top:6px;font-size:13px;color:var(--muted)"></div>
+    </div>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnRelPage">在瀏覽器開啟發佈頁</button>
+    <button class="btn primary" id="btnInstall" disabled>安裝所選版本</button>
+  </div>
+</dialog>
+
+<!-- ================= feedback dialog ================= -->
+<dialog id="dlgFeedback">
+  <div class="dlg-h"><h3>回報問題或建議</h3><div class="spacer"></div><button class="btn ghost sm" data-close>關閉</button></div>
+  <div class="dlg-b">
+    <div class="seg" role="group" aria-label="回報類型">
+      <button data-kind="bug" aria-pressed="true">問題</button><button data-kind="idea" aria-pressed="false">建議</button><button data-kind="other" aria-pressed="false">其他</button>
+    </div>
+    <div class="field">
+      <label class="f" for="fbText">說明（發生什麼事？預期應該如何？）</label>
+      <textarea id="fbText" style="font-family:var(--font);min-height:130px"></textarea>
+      <div class="err-text" id="err-fbText"></div>
+    </div>
+    <div class="field">
+      <label class="f" for="fbContact">聯絡方式（選填）</label>
+      <input type="text" id="fbContact" placeholder="例如 Email 或 GitHub 帳號，方便追問細節">
+    </div>
+    <div class="field">
+      <label class="f">截圖</label>
+      <div class="row">
+        <button class="btn sm" id="btnShot">部分截圖</button>
+        <button class="btn sm" id="btnAddImg">加入圖片…</button>
+      </div>
+      <div class="fb-hint">「部分截圖」會開啟 Windows 內建的截圖工具：用滑鼠拖曳要截取的範圍，只會附上你選的部分（按 Esc 取消）。</div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+    <div class="field">
+      <label class="f">紀錄檔</label>
+      <div class="row">
+        <button class="btn sm" id="btnAddLog">加入紀錄檔…</button>
+      </div>
+      <div class="fb-hint">已自動附上最近一次下載的紀錄檔；若最近一次沒有失敗，另附最近一次有失敗的紀錄檔。附上的是副本，Cookie、登入資訊與使用者資料夾路徑已遮蔽；不需要可按 × 移除。</div>
+      <div class="chips" id="fbLogs"></div>
+    </div>
+    <label class="checks" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="fbDiag" checked> 附上診斷資訊（版本、系統、最近 60 行紀錄；Cookie／密碼與使用者名稱路徑會自動遮蔽）</span></label>
+    <label class="checks" id="fbReplyRow" style="margin-bottom:12px"><span style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="fbWantReply" checked style="margin-top:3px"> 接收開發者的回覆（僅限「直接送出」）：程式開著時，送出後 24 小時內每 1 小時、之後約每 6 小時用這份回報的編號向回報服務查詢一次（只送出編號），有回覆時會跳出通知，例如「已修正，請更新」或「請幫忙測試」。</span></label>
+    <div class="banner show ok hidden" id="fbRef"></div>
+    <div class="note" id="fbWhere"></div>
+    <div class="banner" id="fbResult"></div>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnFbCopy">複製回報內容</button>
+    <button class="btn" id="btnFbGitHub">透過 GitHub 回報</button>
+    <button class="btn primary" id="btnFbSend">直接送出</button>
+  </div>
+</dialog>
+
+<!-- ================= reply to a report ================= -->
+<dialog id="dlgReply">
+  <div class="dlg-h"><h3 id="rpHead">開發者的回覆</h3><div class="spacer"></div><button class="btn ghost sm" id="rpLater">稍後再看</button></div>
+  <div class="dlg-b">
+    <div class="note" id="rpAbout"></div>
+    <div id="rpText" style="white-space:pre-wrap;line-height:1.7;margin:14px 0;overflow-wrap:anywhere"></div>
+    <div id="rpUrls" style="font:12.5px/1.6 var(--mono);overflow-wrap:anywhere;color:var(--muted)"></div>
+  </div>
+  <div class="dlg-f" id="rpActs"></div>
+</dialog>
+
+<!-- ================= disclaimer / terms ================= -->
+<dialog id="dlgTerms">
+  <div class="dlg-h"><h3>免責聲明與使用條款</h3><div class="spacer"></div><span class="ver" id="termsVer"></span></div>
+  <div class="dlg-b terms">
+    <p class="lead">使用本工具前，請閱讀並同意以下條款。若不同意，或所在地法律不允許，請勿使用。</p>
+    <h4>1. 只下載你有權保存的內容</h4>
+    <p>本工具是一般用途的技術工具，僅供下載<b>你本人依法有權保存或使用</b>的內容：你自己的作品、公共領域或允許下載之授權內容、權利人同意的內容，或依當地法律屬合理使用且不違反網站條款的情形。</p>
+    <h4>2. 嚴禁的用途</h4>
+    <ul>
+      <li>未經授權重製、散布、公開傳輸、販售或以其他方式利用他人受著作權保護的內容；</li>
+      <li>規避、破解或移除 DRM、付費牆、登入或地區限制等防盜拷或存取控制措施；</li>
+      <li>取得你沒有合法觀看權限的內容；任何商業用途，或違反網站條款、隱私或其他法律的行為。</li>
+    </ul>
+    <h4>3. 本工具不做的事</h4>
+    <p>本工具<b>不破解 DRM（例如 Widevine、PlayReady、FairPlay）、不繞過付費牆、登入或地區限制</b>；遇到一般加密的串流（HLS AES-128）時，只使用網站播放器播放時實際取得的金鑰，不推算或破解金鑰；<b>不提供、不儲存、不索引、不推薦</b>任何影音內容或網址清單，所有網址由使用者自行輸入；本專案<b>不以營利為目的</b>，不收費、不含廣告。</p>
+    <h4>4. 你的責任</h4>
+    <p>你須自行確認擁有合法權利，並遵守所在地法律（包括中華民國著作權法第 80 條之 2、第 87 條等）及各網站服務條款。因使用本工具所生之法律責任、賠償、帳號限制或封鎖及其他損失，概由你自行承擔；如因你違反本條款致作者或貢獻者遭第三人請求，你同意於法律允許範圍內負責處理並賠償。</p>
+    <h4>5. 帳號風險</h4>
+    <p>網站可能限制或封鎖大量、自動化存取的帳號。「帳號安全模式」只能降低、無法消除風險；需登入的網站請使用下載專用帳號。</p>
+    <h4>6. 無擔保與責任限制</h4>
+    <p>本工具依「現狀」提供，不附任何明示或默示擔保。在法律允許之最大範圍內，作者及貢獻者對任何直接或間接損害概不負責（MIT 授權）。</p>
+    <h4>7. 第三方與商標</h4>
+    <p>yt-dlp、FFmpeg、Deno 等第三方元件於執行時自官方來源下載，依其各自授權提供。本工具與 YouTube、TikTok、Meta、Google 或任何網站均無關聯，亦未獲其背書。</p>
+    <h4>8. 權利人通知與條款變更</h4>
+    <p>權利人如認為本專案侵害其權利，請透過 GitHub Issues 或回報信箱聯繫，我們會儘速處理。條款更新後，程式會再次請你確認。</p>
+    <label class="consent" id="consentRow"><input type="checkbox" id="termsCheck"> 我已閱讀並同意以上條款，並保證只下載我有權保存的內容。</label>
+  </div>
+  <div class="dlg-f">
+    <button class="btn ghost" id="btnTermsDecline">不同意，離開</button>
+    <button class="btn" id="btnTermsClose">關閉</button>
+    <button class="btn primary" id="btnTermsAccept" disabled>同意並開始使用</button>
+  </div>
+</dialog>

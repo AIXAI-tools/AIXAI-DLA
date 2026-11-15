@@ -1,2 +1,4 @@
 # The embedded yt-dlp plugin keeps LF so every build embeds the same bytes.
 ytdlp_plugins/*.py text eol=lf
+# The embedded UI parts keep LF so the page assembles the same on every checkout.
+ui/** text eol=lf
