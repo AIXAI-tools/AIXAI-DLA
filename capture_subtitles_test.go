@@ -67,6 +67,16 @@ func TestIsSubtitleResponse(t *testing.T) {
 	if !isSubtitleResponse("https://cdn.example/sub/123", "text/vtt; charset=utf-8") {
 		t.Error("text/vtt type")
 	}
+	// 2026-11-18 回報：伺服器給 .webvtt 副檔名＋非標準類型「webvtt」
+	if !isSubtitleResponse("https://cdn.example/webvtt/en-US/en_30.webvtt", "webvtt") {
+		t.Error(".webvtt with bare webvtt type")
+	}
+	if !isSubtitleResponse("https://cdn.example/sub/30", "webvtt") {
+		t.Error("bare webvtt type")
+	}
+	if isSubtitleResponse("https://cdn.example/a.mp4", "video/mp4") {
+		t.Error("mp4 must not be a subtitle")
+	}
 }
 
 func TestEpisodeNumberFromQuery(t *testing.T) {

@@ -521,6 +521,9 @@ func (a *app) runUnsupportedFallback(ctx context.Context, rawURL string, mode in
 			if a.stopRequested.Load() {
 				return errStopped
 			}
+			if isUndecodable(err) { // media_decode.go：加密的影片換引擎也一樣，直接說明原因
+				return &commandRunError{Cause: err, Summary: "下載到的影片" + undecodableReason + "，本工具不處理受保護的內容。"}
+			}
 			a.postLog("⚠ 瀏覽器網路嗅探未成功，繼續嘗試 Lux：" + firstLine(err.Error()) + "\r\n")
 		}
 	}

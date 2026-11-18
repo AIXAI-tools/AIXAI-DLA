@@ -413,6 +413,9 @@ func (a *app) verifyOutputs(ctx context.Context, mode int, cfg settings, strict 
 			continue
 		}
 		problems := judgeMedia(info, p)
+		if p.needVideo && a.undecodable(ctx, f, info) { // media_decode.go
+			problems = append(problems, mediaProblem{Text: undecodableReason, Blocking: !p.warnOnly})
+		}
 		var blocking, warnings []string
 		for _, pr := range problems {
 			if pr.Blocking {

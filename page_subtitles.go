@@ -519,12 +519,15 @@ const maxCaptureSubtitleFiles = 6
 const subtitleLoadWait = 5 * time.Second
 
 // isSubtitleResponse reports whether a response is a subtitle file, by the
-// URL's extension or its WebVTT type.
+// URL's extension or its WebVTT type. Some servers name the file ".webvtt"
+// and send a bare "webvtt" type instead of "text/vtt".
 func isSubtitleResponse(raw, mimeType string) bool {
-	if u, err := url.Parse(raw); err == nil && subtitleExts[strings.ToLower(filepath.Ext(u.Path))] {
-		return true
+	if u, err := url.Parse(raw); err == nil {
+		if ext := strings.ToLower(filepath.Ext(u.Path)); subtitleExts[ext] || ext == ".webvtt" {
+			return true
+		}
 	}
-	return strings.Contains(strings.ToLower(mimeType), "text/vtt")
+	return strings.Contains(strings.ToLower(mimeType), "vtt")
 }
 
 // jsonSubtitleList returns the subtitle files a JSON response lists: objects
