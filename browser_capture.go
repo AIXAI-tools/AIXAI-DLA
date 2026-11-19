@@ -213,6 +213,13 @@ func (a *app) downloadBrowserCapturedMedia(ctx context.Context, rawURL string, c
 			err = a.runCommand(ctx, insertBeforeLast(plain, "--impersonate", "chrome"))
 		}
 	}
+	if err != nil && a.isUnusualExtensionError(err) && !a.stopRequested.Load() && ctx.Err() == nil {
+		// Some HLS subtitle URLs use signed paths without a standard extension;
+		// yt-dlp aborts when --write-subs is active, while the app handles HLS
+		// subtitles separately via applyHLSTracks.
+		a.postLog("⚠ 字幕網址的副檔名無法辨識，yt-dlp 停止下載；改成不讓 yt-dlp 寫字幕重試（字幕由程式另外處理）。\r\n")
+		err = a.runCommand(ctx, insertBeforeLast(args, "--no-write-subs", "--no-write-auto-subs"))
+	}
 	if err == nil {
 		for _, f := range a.lastYtFiles {
 			if validFile(f, 1) {
@@ -277,6 +284,7 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 		ffArgs = append(ffArgs, "-headers", strings.Join(lines, "\r\n")+"\r\n")
 	}
 	input := candidate.URL
+	keyed := false
 	if local, cleanup, kerr := a.prepareKeyedPlaylist(ctx, candidate); kerr != nil {
 		a.postLog("⚠ " + kerr.Error() + "\r\n")
 	} else if local != "" {
@@ -284,9 +292,10 @@ func (a *app) downloadCapturedWithFFmpeg(ctx context.Context, rawURL string, can
 		// input is a local file now, which takes no HTTP options.
 		defer cleanup()
 		input = local
+		keyed = true
 		ffArgs = []string{"-y", "-allowed_extensions", "ALL", "-protocol_whitelist", "file,http,https,tcp,tls,crypto"}
 	}
-	ffArgs = append(ffArgs, "-i", input)
+	ffArgs = append(ffArgs, capturedFFmpegInputArgs(candidate, input, keyed)...)
 	if mode == 1 {
 		ffArgs = append(ffArgs, "-vn", "-q:a", "0", dest)
 	} else {
@@ -394,4 +403,22 @@ func (a *app) runBrowserCaptureFallback(ctx context.Context, rawURL string, mode
 		}
 	}
 	return err
+}
+
+func (a *app) isUnusualExtensionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	const needle = "is unusual and will be skipped for safety reasons"
+	if strings.Contains(err.Error(), needle) {
+		return true
+	}
+	return a != nil && strings.Contains(a.lastCmdOutput, needle)
+}
+
+func capturedFFmpegInputArgs(candidate browserMediaCandidate, input string, keyed bool) []string {
+	if !keyed && (strings.EqualFold(candidate.Kind, "HLS") || isManifestURL(input)) {
+		return []string{"-allowed_segment_extensions", "ALL", "-extension_picky", "0", "-i", input}
+	}
+	return []string{"-i", input}
 }
